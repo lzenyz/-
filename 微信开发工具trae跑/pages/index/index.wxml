@@ -1,0 +1,31 @@
+<!--pages/index/index.wxml-->
+<view class="container">
+  <view class="header">
+    <image class="logo" src="/images/logo.png" mode="aspectFit"></image>
+    <text class="title">AR 冰箱贴</text>
+    <text class="subtitle">扫描冰箱贴，观看精彩AR视频</text>
+  </view>
+  
+  <view class="feature-list">
+    <view class="feature-item">
+      <text class="feature-icon">📷</text>
+      <text class="feature-text">智能图像识别</text>
+    </view>
+    <view class="feature-item">
+      <text class="feature-icon">🎬</text>
+      <text class="feature-text">沉浸式AR视频</text>
+    </view>
+    <view class="feature-item">
+      <text class="feature-icon">✨</text>
+      <text class="feature-text">流畅跟随效果</text>
+    </view>
+  </view>
+
+  <button class="start-btn" bindtap="goToAR">
+    开启AR体验
+  </button>
+
+  <view class="tip">
+    <text class="tip-text">提示：请将冰箱贴放置在光线充足的地方</text>
+  </view>
+</view>
