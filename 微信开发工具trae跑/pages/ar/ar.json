@@ -1,6 +1,0 @@
-{
-  "renderer": "xr-frame",
-  "usingComponents": {
-    "easyar-ar": "../../components/easyar-ar/easyar-ar"
-  }
-}
