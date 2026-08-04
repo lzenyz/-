@@ -1,4 +1,5 @@
 // components/easyar-ar/easyar-ar.js
+// const EasyAR = requirePlugin("EasyARMega");  // ← 名称改为 EasyARMega
 import CrsClient from '../libs/crs-client';
 import { atob } from '../libs/atob';
 
@@ -90,16 +91,163 @@ Component({
       this.shadowRoot = this.scene.getElementById('shadow-root');
       this.xrFrameSystem = wx.getXrFrameSystem();
       console.log('✅ XR-Frame 场景已就绪');
-      // 手动注册 SBS 透明视频材质
-  try {
-    this.xrFrameSystem.registerMaterial("videoTransparentSideBySide", (scene) => {
-      return scene.createMaterial(scene.assets.getAsset("effect", "easyar-video-tsbs"));
-    });
-    console.log('✅ SBS 透明材质手动注册成功');
-  } catch (e) {
-    console.warn('⚠️ 手动注册材质失败，可能已由 AR Session 自动注册', e);
-  }
+    
+      // --- 1. 注册 Effect ---
+      // 注意：第二个参数是工厂函数 (scene) => scene.createEffect({...})
+      this.xrFrameSystem.registerEffect('my-video-tsbs', scene => scene.createEffect({
+        name: "my-video-tsbs",
+        images: [{
+          key: 'u_baseColorMap',
+          default: 'white',
+          macro: 'WX_USE_BASECOLORMAP'
+        }],
+        defaultRenderQueue: 3000,
+        passes: [{
+          renderStates: {
+            cullOn: false,
+            blendOn: true,
+            blendSrc: this.xrFrameSystem.EBlendFactor.SRC_ALPHA,
+            blendDst: this.xrFrameSystem.EBlendFactor.ONE_MINUS_SRC_ALPHA,
+            depthWrite: false,
+            cullFace: this.xrFrameSystem.ECullMode.BACK,
+          },
+          lightMode: "ForwardBase",
+          useMaterialRenderStates: true,
+          shaders: [0, 1]
+        }],
+        shaders: [
+          // 顶点着色器
+          `#version 100
+          uniform highp mat4 u_view;
+          uniform highp mat4 u_projection;
+          uniform highp mat4 u_world;
+          attribute vec3 a_position;
+          attribute highp vec2 a_texCoord;
+          varying highp vec2 v_UV;
+          void main() {
+            v_UV = a_texCoord;
+            vec4 worldPosition = u_world * vec4(a_position, 1.0);
+            gl_Position = u_projection * u_view * worldPosition;
+          }`,
+          // 片元着色器
+          `#version 100
+          precision mediump float;
+          varying highp vec2 v_UV;
+          #ifdef WX_USE_BASECOLORMAP
+          uniform sampler2D u_baseColorMap;
+          #endif
+          void main() {
+          #ifdef WX_USE_BASECOLORMAP
+            vec4 color = texture2D(u_baseColorMap, vec2(v_UV.x * 0.5, v_UV.y));
+            float alpha = texture2D(u_baseColorMap, vec2(v_UV.x * 0.5 + 0.5, v_UV.y)).r;
+            gl_FragData[0] = vec4(color.rgb, alpha);
+          #else
+            gl_FragData[0] = vec4(1.0, 1.0, 1.0, 1.0);
+          #endif
+          }`
+        ]
+      }));
+    
+      // --- 2. 注册 Material ---
+      // 注意：用 scene.assets.getAsset('effect', 'my-video-tsbs') 获取 Effect 实例
+      this.xrFrameSystem.registerMaterial("videoTransparentSideBySide", scene => 
+        scene.createMaterial(scene.assets.getAsset('effect', 'my-video-tsbs'))
+      );
+    
+      console.log('✅ 自定义 SBS Effect 和 Material 注册成功');
     },
+
+
+    // handleReady({ detail }) {
+    //   this.scene = detail.value;
+    //   this.shadowRoot = this.scene.getElementById('shadow-root');
+    //   this.xrFrameSystem = wx.getXrFrameSystem();
+    //   console.log('✅ XR-Frame 场景已就绪');
+      
+    //     // --- 1. 注册 Effect (着色器模板) ---
+    //     // 必须在场景就绪后，使用 this.xrFrameSystem 来注册
+    //     this.xrFrameSystem.registerEffect('my-video-tsbs', {
+    //       name: "my-video-tsbs",
+    //       images: [{
+    //         key: 'u_baseColorMap',
+    //         default: 'white',
+    //         macro: 'WX_USE_BASECOLORMAP'
+    //       }],
+    //       defaultRenderQueue: 3000, // 透明物体渲染队列
+    //       passes: [{
+    //         renderStates: {
+    //           cullOn: false,
+    //           blendOn: true, // 开启混合
+    //           blendSrc: this.xrFrameSystem.EBlendFactor.SRC_ALPHA,
+    //           blendDst: this.xrFrameSystem.EBlendFactor.ONE_MINUS_SRC_ALPHA,
+    //           depthWrite: false,
+    //           cullFace: this.xrFrameSystem.ECullMode.BACK,
+    //         },
+    //         lightMode: "ForwardBase",
+    //         useMaterialRenderStates: true,
+    //         shaders: [0, 1]
+    //       }],
+    //       shaders: [
+    //         // 顶点着色器
+    //         `#version 100
+    //         uniform highp mat4 u_view;
+    //         uniform highp mat4 u_projection;
+    //         uniform highp mat4 u_world;
+    //         attribute vec3 a_position;
+    //         attribute highp vec2 a_texCoord;
+    //         varying highp vec2 v_UV;
+    //         void main() {
+    //           v_UV = a_texCoord;
+    //           vec4 worldPosition = u_world * vec4(a_position, 1.0);
+    //           gl_Position = u_projection * u_view * worldPosition;
+    //         }`,
+    //         // 片元着色器 - 核心：分离左右画面
+    //         `#version 100
+    //         precision mediump float;
+    //         varying highp vec2 v_UV;
+    //         #ifdef WX_USE_BASECOLORMAP
+    //         uniform sampler2D u_baseColorMap;
+    //         #endif
+    //         void main() {
+    //         #ifdef WX_USE_BASECOLORMAP
+    //           // 左半边 (0~0.5) 取 RGB 颜色
+    //           vec4 color = texture2D(u_baseColorMap, vec2(v_UV.x * 0.5, v_UV.y));
+    //           // 右半边 (0.5~1.0) 取 Alpha 遮罩
+    //           float alpha = texture2D(u_baseColorMap, vec2(v_UV.x * 0.5 + 0.5, v_UV.y)).r;
+    //           gl_FragData[0] = vec4(color.rgb, alpha);
+    //         #else
+    //           gl_FragData[0] = vec4(1.0, 1.0, 1.0, 1.0);
+    //         #endif
+    //         }`
+    //       ]
+    //     });
+      
+    //     // --- 2. 注册 Material (材质) ---
+    //     // 使用 setTimeout 确保 Effect 注册完成
+    //     setTimeout(() => {
+    //       try {
+    //         this.xrFrameSystem.registerMaterial("videoTransparentSideBySide", (scene) => {
+    //           // 通过名称引用我们刚刚注册的 Effect
+    //           return scene.createMaterial("my-video-tsbs");
+    //         });
+    //         console.log('✅ 自定义 SBS 材质注册成功');
+    //       } catch (e) {
+    //         console.error('❌ 注册材质失败:', e);
+    //       }
+    //     }, 100);
+
+    //   // 手动注册 SBS 透明视频材质
+    //   // setTimeout(() => {
+    //   // try {
+    //   // this.xrFrameSystem.registerMaterial("videoTransparentSideBySide", (scene) => {
+    //   // return scene.createMaterial(scene.assets.getAsset("effect", "easyar-video-tsbs"));
+    //   // });
+    //   // console.log('✅ SBS 透明材质手动注册成功');
+    //   // } catch (e) {
+    //   // console.warn('⚠️ 手动注册材质失败，可能已由 AR Session 自动注册', e);
+    //   // }
+    //   // }, 500); // 延迟 500 毫秒
+    // },
 
     /**
      * AR 系统准备就绪（相机已启动、跟踪器已初始化）
@@ -329,7 +477,7 @@ Component({
 
       const el = this.scene.createElement(this.xrFrameSystem.XRMesh, {
         geometry: 'plane',
-        material: 'easyar-video-tsbs',  // SBS 透明材质[reference:3][reference:4]
+        material: 'videoTransparentSideBySide',  // SBS 透明材质[reference:3][reference:4]
         uniforms: `u_baseColorMap:video-${targetId}`,
       });
 
