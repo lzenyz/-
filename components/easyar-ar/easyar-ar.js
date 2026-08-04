@@ -496,12 +496,19 @@ Component({
 
       // 5. 设置平面缩放，保持视频宽高比
       const w = planeWidth || 1;
-      // 高度根据视频宽高比计算，保持比例
       const h = (planeHeight || 1) * (height / width);
       console.log(`📐 最终平面缩放: w=${w}, h=${h}`);
       const t = el.getComponent(this.xrFrameSystem.Transform);
       if (t) {
+        // 设置缩放（宽、厚、高）
         t.scale.setValue(w, 1, h);
+        
+        // ⭐ 设置位置偏移（单位：米）
+        // 参数顺序：X（左右）, Y（上下）, Z（前后）
+        const offsetX = 0.15;   // 向右移 5 厘米
+        const offsetY = 0.02;   // 向上移 2 厘米
+        const offsetZ = 0.03;   // 向前（朝相机）移 3 厘米
+        t.position.setValue(offsetX, offsetY, offsetZ);
       }
 
       // 6. 完成
