@@ -37,9 +37,7 @@ exports.main = async (event, context) => {
 };
 
 /**
- * 根据 targetId 查询冰箱贴数据
- * @param {string} targetId - EasyAR 识别返回的 targetId
- * @returns {Object} 包含 videoUrl, planeWidth, planeHeight
+ * 根据 targetId 查询冰箱贴数据（返回 videoUrl, coverUrl 等）
  */
 async function getStickerDataByTargetId(targetId) {
   if (!targetId) {
@@ -51,15 +49,13 @@ async function getStickerDataByTargetId(targetId) {
 
   try {
     const result = await db.collection('fridgeStickers')
-      .where({
-        targetId: targetId
-      })
+      .where({ targetId: targetId })
       .get();
 
     if (result.data && result.data.length > 0) {
       const sticker = result.data[0];
 
-      // 收集所有 cloud:// 协议的文件，统一换取临时 HTTPS URL（视频 + 封面图）
+      // 收集需要转换的 cloud:// 文件
       const fileList = [];
       if (sticker.videoUrl && sticker.videoUrl.startsWith('cloud://')) {
         fileList.push(sticker.videoUrl);
@@ -70,15 +66,17 @@ async function getStickerDataByTargetId(targetId) {
 
       let tempVideoUrl = sticker.videoUrl;
       let tempCoverUrl = sticker.coverUrl || '';
+
       if (fileList.length > 0) {
         try {
           const tempUrlResult = await cloud.getTempFileURL({ fileList });
           if (tempUrlResult.fileList && tempUrlResult.fileList.length > 0) {
-            tempUrlResult.fileList.forEach((item, index) => {
+            tempUrlResult.fileList.forEach((item) => {
               if (item && item.tempFileURL) {
-                if (fileList[index] === sticker.videoUrl) {
+                if (item.fileID === sticker.videoUrl) {
                   tempVideoUrl = item.tempFileURL;
-                } else if (fileList[index] === sticker.coverUrl) {
+                }
+                if (item.fileID === sticker.coverUrl) {
                   tempCoverUrl = item.tempFileURL;
                 }
               }
@@ -99,7 +97,6 @@ async function getStickerDataByTargetId(targetId) {
           coverUrl: tempCoverUrl,
           planeWidth: sticker.planeWidth || 1,
           planeHeight: sticker.planeHeight || 1,
-          // 若数据库 title 为空，默认赋值“未命名冰箱贴”
           title: sticker.title || '未命名冰箱贴',
           description: sticker.description || ''
         }
@@ -134,6 +131,7 @@ async function getAllStickers() {
         _id: item._id,
         targetId: item.targetId,
         videoUrl: item.videoUrl,
+        coverUrl: item.coverUrl || '',
         planeWidth: item.planeWidth || 1,
         planeHeight: item.planeHeight || 1,
         title: item.title || '',
@@ -148,10 +146,11 @@ async function getAllStickers() {
 }
 
 /**
- * 创建/更新冰箱贴数据
+ * 创建/更新冰箱贴数据（⭐ 已增加 coverUrl 保存）
  */
 async function createSticker(params) {
-  const { targetId, videoUrl, planeWidth, planeHeight, title, description } = params;
+  // ✅ 从 params 中解构出 coverUrl
+  const { targetId, videoUrl, coverUrl, planeWidth, planeHeight, title, description } = params;
 
   if (!targetId || !videoUrl) {
     return {
@@ -167,12 +166,13 @@ async function createSticker(params) {
       .get();
 
     if (existResult.data.length > 0) {
-      // 更新
-      const updateResult = await db.collection('fridgeStickers')
+      // 更新：保存 coverUrl
+      await db.collection('fridgeStickers')
         .doc(existResult.data[0]._id)
         .update({
           data: {
             videoUrl: videoUrl,
+            coverUrl: coverUrl || '',      // ✅ 新增
             planeWidth: planeWidth || 1,
             planeHeight: planeHeight || 1,
             title: title || '',
@@ -183,16 +183,16 @@ async function createSticker(params) {
 
       return {
         code: 0,
-        message: '更新成功',
-        data: updateResult
+        message: '更新成功'
       };
     } else {
-      // 新增
-      const addResult = await db.collection('fridgeStickers')
+      // 新增：保存 coverUrl
+      await db.collection('fridgeStickers')
         .add({
           data: {
             targetId: targetId,
             videoUrl: videoUrl,
+            coverUrl: coverUrl || '',      // ✅ 新增
             planeWidth: planeWidth || 1,
             planeHeight: planeHeight || 1,
             title: title || '',
@@ -204,8 +204,7 @@ async function createSticker(params) {
 
       return {
         code: 0,
-        message: '创建成功',
-        data: addResult
+        message: '创建成功'
       };
     }
   } catch (error) {
