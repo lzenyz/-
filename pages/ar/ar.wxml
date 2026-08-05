@@ -30,10 +30,6 @@
       <text class="scan-text">请将冰箱贴放入识别框内</text>
     </view>
 
-    <view wx:if="{{isRecognized && !isVideoLoading}}" class="recognize-hint">
-      <text class="hint-text">识别成功 · AR 视频播放中</text>
-    </view>
-
     <view class="back-btn" bindtap="goBack">
       <text class="back-icon">←</text>
     </view>

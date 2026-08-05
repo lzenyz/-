@@ -1,31 +1,54 @@
 <!--pages/index/index.wxml-->
-<view class="container">
-  <view class="header">
-    <image class="logo" src="/images/logo.png" mode="aspectFit"></image>
-    <text class="title">AR 冰箱贴</text>
-    <text class="subtitle">扫描冰箱贴，观看精彩AR视频</text>
+<view class="page">
+  <!-- 自定义导航栏 -->
+  <view class="nav-bar" style="padding-top: {{statusBarHeight}}px; height: {{navBarHeight + statusBarHeight}}px;">
+    <view class="nav-bar-inner" style="height: {{navBarHeight}}px;">
+      <text class="nav-title">我的冰箱贴收藏</text>
+    </view>
   </view>
-  
-  <view class="feature-list">
-    <view class="feature-item">
-      <text class="feature-icon">📷</text>
-      <text class="feature-text">智能图像识别</text>
+  <!-- 占位，避免内容被导航栏遮挡 -->
+  <view style="height: {{navBarHeight + statusBarHeight}}px;"></view>
+
+  <!-- 列表区域 -->
+  <view class="content">
+    <!-- 空状态 -->
+    <view class="empty-state" wx:if="{{isEmpty}}">
+      <view class="empty-icon">📦</view>
+      <text class="empty-text">暂未收集冰箱贴，点击右下角扫码添加</text>
     </view>
-    <view class="feature-item">
-      <text class="feature-icon">🎬</text>
-      <text class="feature-text">沉浸式AR视频</text>
-    </view>
-    <view class="feature-item">
-      <text class="feature-icon">✨</text>
-      <text class="feature-text">流畅跟随效果</text>
+
+    <!-- 卡片列表：横向占满，一屏约 3 个，可下滑 -->
+    <view class="list" wx:else>
+      <view
+        class="card"
+        wx:for="{{stickerList}}"
+        wx:key="targetId"
+        data-target-id="{{item.targetId}}"
+        bindtap="onStickerTap"
+      >
+        <!-- 封面图：优先渲染云存储图片，无图时降级到图标占位 -->
+        <view class="cover">
+          <image
+            wx:if="{{item.coverUrl}}"
+            class="cover-img"
+            src="{{item.coverUrl}}"
+            mode="aspectFill"
+            lazy-load
+          />
+          <view wx:else class="cover-fallback">
+            <text class="cover-icon">🎬</text>
+          </view>
+        </view>
+        <view class="info">
+          <view class="card-title">{{item.title}}</view>
+          <view class="card-sub">点击进入 AR 体验</view>
+        </view>
+      </view>
     </view>
   </view>
 
-  <button class="start-btn" bindtap="goToAR">
-    开启AR体验
-  </button>
-
-  <view class="tip">
-    <text class="tip-text">提示：请将冰箱贴放置在光线充足的地方</text>
+  <!-- 悬浮扫码按钮 -->
+  <view class="fab" bindtap="onScanTap">
+    <text class="fab-icon">+</text>
   </view>
 </view>

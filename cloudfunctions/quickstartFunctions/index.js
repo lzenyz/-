@@ -58,32 +58,49 @@ async function getStickerDataByTargetId(targetId) {
 
     if (result.data && result.data.length > 0) {
       const sticker = result.data[0];
-      
-      // 如果 videoUrl 是 cloud:// 协议，转换为临时 HTTPS URL
-      let videoUrl = sticker.videoUrl;
-      if (videoUrl && videoUrl.startsWith('cloud://')) {
+
+      // 收集所有 cloud:// 协议的文件，统一换取临时 HTTPS URL（视频 + 封面图）
+      const fileList = [];
+      if (sticker.videoUrl && sticker.videoUrl.startsWith('cloud://')) {
+        fileList.push(sticker.videoUrl);
+      }
+      if (sticker.coverUrl && sticker.coverUrl.startsWith('cloud://')) {
+        fileList.push(sticker.coverUrl);
+      }
+
+      let tempVideoUrl = sticker.videoUrl;
+      let tempCoverUrl = sticker.coverUrl || '';
+      if (fileList.length > 0) {
         try {
-          const tempUrlResult = await cloud.getTempFileURL({
-            fileList: [videoUrl]
-          });
+          const tempUrlResult = await cloud.getTempFileURL({ fileList });
           if (tempUrlResult.fileList && tempUrlResult.fileList.length > 0) {
-            videoUrl = tempUrlResult.fileList[0].tempFileURL;
+            tempUrlResult.fileList.forEach((item, index) => {
+              if (item && item.tempFileURL) {
+                if (fileList[index] === sticker.videoUrl) {
+                  tempVideoUrl = item.tempFileURL;
+                } else if (fileList[index] === sticker.coverUrl) {
+                  tempCoverUrl = item.tempFileURL;
+                }
+              }
+            });
           }
         } catch (convertError) {
           console.warn('cloud:// 转 HTTPS 失败，使用原地址:', convertError);
         }
       }
-      
+
       return {
         code: 0,
         message: '查询成功',
         data: {
           _id: sticker._id,
           targetId: sticker.targetId,
-          videoUrl: videoUrl,
+          videoUrl: tempVideoUrl,
+          coverUrl: tempCoverUrl,
           planeWidth: sticker.planeWidth || 1,
           planeHeight: sticker.planeHeight || 1,
-          title: sticker.title || '',
+          // 若数据库 title 为空，默认赋值“未命名冰箱贴”
+          title: sticker.title || '未命名冰箱贴',
           description: sticker.description || ''
         }
       };
