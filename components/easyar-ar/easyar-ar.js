@@ -261,12 +261,19 @@ Component({
     // ==================== 外部调用接口 ====================
 
     /**
-     * 外部调用：播放视频
+     * 外部调用：播放视频（⭐ 支持传入位置偏移）
+     * @param {string} videoUrl - 视频地址
+     * @param {number} planeWidth - 平面宽度
+     * @param {number} planeHeight - 平面高度
+     * @param {number} posX - X轴偏移（默认0）
+     * @param {number} posY - Y轴偏移（默认0）
+     * @param {number} posZ - Z轴偏移（默认0）
      */
-    playVideoFromUrl(videoUrl, planeWidth, planeHeight) {
+    playVideoFromUrl(videoUrl, planeWidth, planeHeight, posX = 0, posY = 0, posZ = 0) {
       console.log('🎬 [playVideoFromUrl] 被调用，视频地址:', videoUrl);
       console.log('📐 平面尺寸: width=', planeWidth, 'height=', planeHeight);
-      this.pendingVideo = { videoUrl, planeWidth, planeHeight };
+      console.log('📍 位置偏移: posX=', posX, 'posY=', posY, 'posZ=', posZ);
+      this.pendingVideo = { videoUrl, planeWidth, planeHeight, posX, posY, posZ };
       this.isLoading = false;
       if (this.data.arReady && this.data.markerImg) {
         this.tryPlayVideo();
@@ -290,29 +297,25 @@ Component({
         return;
       }
 
-      const { videoUrl, planeWidth, planeHeight } = this.pendingVideo;
+      const { videoUrl, planeWidth, planeHeight, posX, posY, posZ } = this.pendingVideo;
       this.isLoading = true;
       setTimeout(() => {
-        this.loadSBSVideo(videoUrl, planeWidth, planeHeight);
+        this.loadSBSVideo(videoUrl, planeWidth, planeHeight, posX, posY, posZ);
       }, 1000);
     },
 
     /**
-     * 播放 SBS 格式的透明视频（已移除 Toast 提示）
+     * 播放 SBS 格式的透明视频（⭐ 使用动态位置）
      */
-    loadSBSVideo: async function (videoUrl, planeWidth, planeHeight) {
+    loadSBSVideo: async function (videoUrl, planeWidth, planeHeight, posX = 0, posY = 0, posZ = 0) {
       console.log('📹 [loadSBSVideo] 使用 easyar-video-tsbs 材质播放 SBS 透明视频');
 
       if (!this.scene) {
         console.error('❌ scene 未初始化');
-        // 保留错误提示（可选）
         wx.showToast({ icon: 'none', title: 'AR场景未就绪' });
         this.isLoading = false;
         return;
       }
-
-      // 已移除“加载视频中...”提示
-      // wx.showToast({ icon: 'none', title: '加载视频中...', duration: 2000 });
 
       const targetId = 'video_' + Date.now();
       console.log('🆔 生成 assetId:', targetId);
@@ -365,22 +368,17 @@ Component({
       console.log('✅ 视频元素已添加到场景');
 
       const w = planeWidth || 1;
-      const h = w * (2*height / width);
+      const h = w * (2 * height / width);
       console.log(`📐 最终平面缩放: w=${w}, h=${h}`);
       const t = el.getComponent(this.xrFrameSystem.Transform);
       if (t) {
         t.scale.setValue(w, 1, h);
-        const offsetX = 0.16;
-        const offsetY = 0.00;
-        const offsetZ = 0.00;
-        t.position.setValue(offsetX, offsetY, offsetZ);
+        // ⭐ 使用传入的位置偏移（替代原来的硬编码 offsetX/Y/Z）
+        t.position.setValue(posX, posY, posZ);
       }
 
       this.isLoading = false;
       this.pendingVideo = null;
-
-      // 已移除“视频播放中”提示
-      // wx.showToast({ icon: 'none', title: '视频播放中' });
       console.log('🎉 [loadSBSVideo] 完成');
     },
 

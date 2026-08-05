@@ -7,7 +7,7 @@ Page({
     isRecognized: false,
     isError: false,
     isVideoLoading: false,
-    runingCrs: false,      // 等待 AR 就绪后才设为 true
+    runingCrs: false, 
     tracking: false,
     width: 0,
     height: 0,
@@ -25,9 +25,6 @@ Page({
     console.log('📱 AR页面加载，配置:', this.data.config);
   },
 
-  /**
-   * 当 AR 系统真正就绪时，由 easyar-ar 组件触发
-   */
   onARReady() {
     console.log('🎯 AR 已就绪，开始识别');
     this.setData({
@@ -38,9 +35,6 @@ Page({
     });
   },
 
-  /**
-   * 识别到目标时的回调
-   */
   onSearchSuccess(e) {
     const { targetId } = e.detail;
     console.log('🎯 识别到目标，targetId:', targetId);
@@ -59,9 +53,6 @@ Page({
     this.fetchStickerData(targetId);
   },
 
-  /**
-   * 查询云数据库获取视频数据
-   */
   async fetchStickerData(targetId) {
     console.log('📞 开始查询数据库，targetId:', targetId);
     try {
@@ -74,11 +65,19 @@ Page({
         },
       });
       wx.hideLoading();
+      
       console.log('📦 云函数返回结果:', result);
 
       if (result.result && result.result.code === 0 && result.result.data) {
-        let { videoUrl, planeWidth, planeHeight } = result.result.data;
-        console.log('📄 数据库原始数据: videoUrl=', videoUrl, 'planeWidth=', planeWidth, 'planeHeight=', planeHeight);
+        let { videoUrl, planeWidth, planeHeight, posX, posY, posZ } = result.result.data;
+        
+        // ⭐ 打印从数据库读取的原始值（此时没有硬编码覆盖）
+        console.log('📍 从数据库读取的位置参数: posX=', posX, 'posY=', posY, 'posZ=', posZ);
+
+        // 确保有默认值（如果字段不存在则为 0）
+        posX = posX || 0;
+        posY = posY || 0;
+        posZ = posZ || 0;
 
         // 若 videoUrl 是 cloud://，转换为临时 HTTPS
         if (videoUrl && videoUrl.startsWith('cloud://')) {
@@ -98,7 +97,8 @@ Page({
         const easyarComponent = this.selectComponent('#easyar-ar');
         if (easyarComponent) {
           console.log('✅ 找到 easyar-ar 组件，准备播放');
-          easyarComponent.playVideoFromUrl(videoUrl, planeWidth, planeHeight);
+          console.log('🎯 传给组件的位置: posX=', posX, 'posY=', posY, 'posZ=', posZ);
+          easyarComponent.playVideoFromUrl(videoUrl, planeWidth, planeHeight, posX, posY, posZ);
           this.setData({ isVideoLoading: false, isVideoLoaded: true });
         } else {
           throw new Error('未找到 easyar-ar 组件');
@@ -114,9 +114,6 @@ Page({
     }
   },
 
-  /**
-   * 返回首页
-   */
   goBack() {
     wx.navigateBack({
       delta: 1,
