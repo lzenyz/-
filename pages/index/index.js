@@ -14,7 +14,6 @@ Page({
       const menuBtn = wx.getMenuButtonBoundingClientRect();
       this.setData({
         statusBarHeight: sysInfo.statusBarHeight,
-        // 导航栏高度 = (菜单按钮上边界 - 状态栏高度) * 2 + 菜单按钮高度
         navBarHeight: (menuBtn.top - sysInfo.statusBarHeight) * 2 + menuBtn.height
       });
     } catch (e) {
@@ -80,10 +79,8 @@ Page({
         const result = res.result || {};
         if (result.code === 0 && result.data) {
           const added = this.addStickerToCache(result.data);
-          // 不论是否重复，都跳转 AR 页（用户扫了码就想去看看）
           this.goToAR();
           if (added) {
-            // 延迟提示，避免与跳转动画冲突
             setTimeout(() => {
               wx.showToast({
                 title: '已加入收藏',
@@ -117,7 +114,6 @@ Page({
         });
       },
       complete: () => {
-        // loading 在成功分支跳转后由 AR 页接管，失败分支已主动 hide
       }
     });
   },
