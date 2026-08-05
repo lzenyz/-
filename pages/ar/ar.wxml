@@ -8,18 +8,21 @@
     width="{{width * dpi}}"
     height="{{height * dpi}}"
     bind:searchSuccess="onSearchSuccess"
+    bind:arReady="onARReady"
     style="width:{{width}}px;height:{{height}}px;"
   >
   </easyar-ar>
 
   <!-- UI 覆盖层 -->
   <view class="ui-overlay">
+    <!-- 初始化加载提示 -->
     <view wx:if="{{isInitializing}}" class="loading-mask">
       <view class="loading-spinner"></view>
       <text class="loading-text">正在初始化AR...</text>
       <text class="loading-sub">{{initStatus}}</text>
     </view>
 
+    <!-- 扫描引导（仅在未识别且未出错时显示） -->
     <view wx:elif="{{!isRecognized && !isError}}" class="scan-tip">
       <view class="scan-frame">
         <view class="corner tl"></view>
@@ -30,6 +33,7 @@
       <text class="scan-text">请将冰箱贴放入识别框内</text>
     </view>
 
+    <!-- 返回按钮 -->
     <view class="back-btn" bindtap="goBack">
       <text class="back-icon">←</text>
     </view>

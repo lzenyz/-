@@ -1,3 +1,4 @@
+// pages/ar/ar.js
 Page({
   data: {
     config: getApp().globalData.config,
@@ -6,7 +7,7 @@ Page({
     isRecognized: false,
     isError: false,
     isVideoLoading: false,
-    runingCrs: false,
+    runingCrs: false,      // 等待 AR 就绪后才设为 true
     tracking: false,
     width: 0,
     height: 0,
@@ -24,19 +25,22 @@ Page({
     console.log('📱 AR页面加载，配置:', this.data.config);
   },
 
-  onReady() {
-    setTimeout(() => {
-      this.setData({
-        runingCrs: true,
-        tracking: true,
-        isInitializing: false,
-        initStatus: '请扫描识别图',
-      });
-      console.log('✅ AR 启动，开始扫描');
-    }, 1500);
+  /**
+   * 当 AR 系统真正就绪时，由 easyar-ar 组件触发
+   */
+  onARReady() {
+    console.log('🎯 AR 已就绪，开始识别');
+    this.setData({
+      runingCrs: true,
+      tracking: true,
+      isInitializing: false,
+      initStatus: '请扫描识别图',
+    });
   },
 
-  // ===== 监听识别成功事件 =====
+  /**
+   * 识别到目标时的回调
+   */
   onSearchSuccess(e) {
     const { targetId } = e.detail;
     console.log('🎯 识别到目标，targetId:', targetId);
@@ -55,7 +59,9 @@ Page({
     this.fetchStickerData(targetId);
   },
 
-  // ===== 查询云数据库 =====
+  /**
+   * 查询云数据库获取视频数据
+   */
   async fetchStickerData(targetId) {
     console.log('📞 开始查询数据库，targetId:', targetId);
     try {
@@ -74,7 +80,7 @@ Page({
         let { videoUrl, planeWidth, planeHeight } = result.result.data;
         console.log('📄 数据库原始数据: videoUrl=', videoUrl, 'planeWidth=', planeWidth, 'planeHeight=', planeHeight);
 
-        // 如果 videoUrl 是 cloud://，前端转换（获取最新链接）
+        // 若 videoUrl 是 cloud://，转换为临时 HTTPS
         if (videoUrl && videoUrl.startsWith('cloud://')) {
           console.log('🔄 转换 cloud:// 链接为临时 HTTPS...');
           const res = await wx.cloud.getTempFileURL({
@@ -92,7 +98,6 @@ Page({
         const easyarComponent = this.selectComponent('#easyar-ar');
         if (easyarComponent) {
           console.log('✅ 找到 easyar-ar 组件，准备播放');
-          // ⭐ 调用正确的方法
           easyarComponent.playVideoFromUrl(videoUrl, planeWidth, planeHeight);
           this.setData({ isVideoLoading: false, isVideoLoaded: true });
         } else {
@@ -109,7 +114,9 @@ Page({
     }
   },
 
-  // ===== 返回首页 =====
+  /**
+   * 返回首页
+   */
   goBack() {
     wx.navigateBack({
       delta: 1,
