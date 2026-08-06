@@ -17,7 +17,7 @@
       <text class="empty-text">暂未收集冰箱贴，点击右下角扫码添加</text>
     </view>
 
-    <!-- 卡片列表：横向占满，一屏约 3 个，可下滑 -->
+    <!-- 卡片列表 -->
     <view class="list" wx:else>
       <view
         class="card"
@@ -26,7 +26,6 @@
         data-target-id="{{item.targetId}}"
         bindtap="onStickerTap"
       >
-        <!-- 封面图：优先渲染云存储图片，无图时降级到图标占位 -->
         <view class="cover">
           <image
             wx:if="{{item.coverUrl}}"
@@ -34,6 +33,8 @@
             src="{{item.coverUrl}}"
             mode="aspectFill"
             lazy-load
+            binderror="onImageError"
+            data-index="{{index}}"
           />
           <view wx:else class="cover-fallback">
             <text class="cover-icon">🎬</text>

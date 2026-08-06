@@ -4,11 +4,11 @@ Page({
     stickerList: [],
     isEmpty: true,
     statusBarHeight: 20,
-    navBarHeight: 44
+    navBarHeight: 44,
+    tempUrlCache: {}
   },
 
   onLoad() {
-    // 获取状态栏高度，用于自定义导航栏
     try {
       const sysInfo = wx.getWindowInfo();
       const menuBtn = wx.getMenuButtonBoundingClientRect();
@@ -25,33 +25,73 @@ Page({
     this.loadStickerList();
   },
 
-  /**
-   * 从本地缓存加载冰箱贴列表
-   */
-  loadStickerList() {
+  async loadStickerList() {
     const list = wx.getStorageSync('myStickers') || [];
+    if (list.length === 0) {
+      this.setData({ stickerList: [], isEmpty: true });
+      return;
+    }
+
+    // 收集所有 cloud:// 封面链接
+    const cloudFileIds = list
+      .map(item => item.coverUrl)
+      .filter(url => url && url.startsWith('cloud://'));
+
+    let tempUrlMap = {};
+    if (cloudFileIds.length > 0) {
+      try {
+        const uniqueIds = [...new Set(cloudFileIds)];
+        const needConvert = uniqueIds.filter(id => !this.data.tempUrlCache[id]);
+        let converted = {};
+        if (needConvert.length > 0) {
+          const res = await wx.cloud.getTempFileURL({ fileList: needConvert });
+          if (res.fileList) {
+            res.fileList.forEach(item => {
+              if (item.tempFileURL) {
+                converted[item.fileID] = item.tempFileURL;
+                this.data.tempUrlCache[item.fileID] = item.tempFileURL;
+              }
+            });
+          }
+        }
+        tempUrlMap = { ...this.data.tempUrlCache, ...converted };
+      } catch (e) {
+        console.error('获取临时链接失败', e);
+      }
+    }
+
+    const newList = list.map(item => {
+      let coverUrl = item.coverUrl;
+      if (item.coverUrl && item.coverUrl.startsWith('cloud://') && tempUrlMap[item.coverUrl]) {
+        coverUrl = tempUrlMap[item.coverUrl];
+      }
+      return { ...item, coverUrl };
+    });
+
     this.setData({
-      stickerList: list,
-      isEmpty: list.length === 0
+      stickerList: newList,
+      isEmpty: false
     });
   },
 
-  /**
-   * 点击悬浮按钮，调用扫码
-   * 扫码成功 → 拉取数据 → 入缓存（去重）→ 直接跳 AR 页
-   */
+  // ⭐ 图片加载失败时的降级处理
+  onImageError(e) {
+    const index = e.currentTarget.dataset.index;
+    const list = this.data.stickerList;
+    if (list[index]) {
+      list[index].coverUrl = ''; // 清空错误链接，触发 fallback
+      this.setData({ stickerList: list });
+    }
+  },
+
   onScanTap() {
     wx.scanCode({
       onlyFromCamera: false,
       scanType: ['qrCode'],
       success: (res) => {
-        console.log('扫码结果', res);
         const targetId = (res.result || '').trim();
         if (!targetId) {
-          wx.showToast({
-            title: '二维码内容为空',
-            icon: 'none'
-          });
+          wx.showToast({ title: '二维码内容为空', icon: 'none' });
           return;
         }
         this.fetchStickerDataAndGoAR(targetId);
@@ -62,110 +102,69 @@ Page({
     });
   },
 
-  /**
-   * 调云函数拿数据 → 入缓存（去重）→ 跳 AR 页
-   */
   fetchStickerDataAndGoAR(targetId) {
     wx.showLoading({ title: '正在获取数据...', mask: true });
 
     wx.cloud.callFunction({
       name: 'quickstartFunctions',
-      data: {
-        action: 'getStickerDataByTargetId',
-        targetId: targetId
-      },
+      data: { action: 'getStickerDataByTargetId', targetId: targetId },
       success: (res) => {
-        console.log('云函数返回', res);
         const result = res.result || {};
         if (result.code === 0 && result.data) {
-          const added = this.addStickerToCache(result.data);
-          this.goToAR();
-          if (added) {
-            setTimeout(() => {
-              wx.showToast({
-                title: '已加入收藏',
-                icon: 'success',
-                duration: 1500
-              });
-            }, 600);
-          } else {
-            setTimeout(() => {
-              wx.showToast({
-                title: '已拥有该冰箱贴',
-                icon: 'none',
-                duration: 1500
-              });
-            }, 600);
-          }
+          this.addStickerToCache(result.data);
+          // ⭐ 跳转时带上 targetId
+          this.goToAR(targetId);
+          wx.hideLoading();
+          setTimeout(() => {
+            wx.showToast({ title: '已加入收藏', icon: 'success', duration: 1500 });
+          }, 600);
         } else {
           wx.hideLoading();
-          wx.showToast({
-            title: result.message || '未找到该冰箱贴',
-            icon: 'none'
-          });
+          wx.showToast({ title: result.message || '未找到该冰箱贴', icon: 'none' });
         }
       },
       fail: (err) => {
         console.error('调用云函数失败', err);
         wx.hideLoading();
-        wx.showToast({
-          title: '网络异常，请重试',
-          icon: 'none'
-        });
-      },
-      complete: () => {
+        wx.showToast({ title: '网络异常，请重试', icon: 'none' });
       }
     });
   },
 
-  /**
-   * 将冰箱贴数据加入本地缓存（去重）
-   * @returns {boolean} 是否新增成功（true=新增，false=已存在）
-   */
   addStickerToCache(sticker) {
     const list = wx.getStorageSync('myStickers') || [];
     const isExist = list.some(item => item.targetId === sticker.targetId);
-    if (isExist) {
-      return false;
-    }
+    if (isExist) return false;
 
-    const newItem = {
+    list.push({
       _id: sticker._id,
       targetId: sticker.targetId,
       title: sticker.title || '未命名冰箱贴',
       videoUrl: sticker.videoUrl,
-      coverUrl: sticker.coverUrl || ''
-    };
-
-    list.push(newItem);
+      coverUrl: sticker.coverUrl || '' // 存储 cloud://
+    });
     wx.setStorageSync('myStickers', list);
     return true;
   },
 
-  /**
-   * 跳转 AR 页
-   */
-  goToAR() {
-    wx.hideLoading();
+  // ⭐ 跳转 AR 页，带上 targetId 参数
+  goToAR(targetId) {
     wx.navigateTo({
-      url: '/pages/ar/ar',
-      success: () => {
-        console.log('跳转AR页面成功');
-      },
+      url: `/pages/ar/ar?targetId=${encodeURIComponent(targetId)}`,
       fail: (err) => {
         console.error('跳转AR页面失败', err);
-        wx.showToast({
-          title: '跳转失败',
-          icon: 'none'
-        });
+        wx.showToast({ title: '跳转失败', icon: 'none' });
       }
     });
   },
 
-  /**
-   * 点击列表卡片跳转 AR 页
-   */
-  onStickerTap() {
-    this.goToAR();
+  // ⭐ 点击卡片时，获取 targetId 并跳转
+  onStickerTap(e) {
+    const targetId = e.currentTarget.dataset.targetId;
+    if (targetId) {
+      this.goToAR(targetId);
+    } else {
+      wx.showToast({ title: '数据异常', icon: 'none' });
+    }
   }
 });

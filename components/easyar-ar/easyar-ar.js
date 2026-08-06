@@ -299,13 +299,11 @@ Component({
 
       const { videoUrl, planeWidth, planeHeight, posX, posY, posZ } = this.pendingVideo;
       this.isLoading = true;
-      setTimeout(() => {
-        this.loadSBSVideo(videoUrl, planeWidth, planeHeight, posX, posY, posZ);
-      }, 1000);
+      this.loadSBSVideo(videoUrl, planeWidth, planeHeight, posX, posY, posZ);
     },
 
     /**
-     * 播放 SBS 格式的透明视频（⭐ 使用动态位置）
+     * 播放 SBS 格式的透明视频
      */
     loadSBSVideo: async function (videoUrl, planeWidth, planeHeight, posX = 0, posY = 0, posZ = 0) {
       console.log('📹 [loadSBSVideo] 使用 easyar-video-tsbs 材质播放 SBS 透明视频');
@@ -373,7 +371,6 @@ Component({
       const t = el.getComponent(this.xrFrameSystem.Transform);
       if (t) {
         t.scale.setValue(w, 1, h);
-        // ⭐ 使用传入的位置偏移（替代原来的硬编码 offsetX/Y/Z）
         t.position.setValue(posX, posY, posZ);
       }
 

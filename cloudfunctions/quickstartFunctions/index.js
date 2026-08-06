@@ -57,44 +57,37 @@ async function getStickerDataByTargetId(targetId) {
       // 打印原始数据（用于调试）
       console.log('🔍 数据库原始数据:', JSON.stringify(sticker));
 
-      // 转换 cloud:// 链接
+      // 只转换 videoUrl（需要播放），coverUrl 保留 fileID
       let tempVideoUrl = sticker.videoUrl;
-      let tempCoverUrl = sticker.coverUrl || '';
-      const fileList = [];
       if (sticker.videoUrl && sticker.videoUrl.startsWith('cloud://')) {
-        fileList.push(sticker.videoUrl);
-      }
-      if (sticker.coverUrl && sticker.coverUrl.startsWith('cloud://')) {
-        fileList.push(sticker.coverUrl);
-      }
-      if (fileList.length > 0) {
         try {
-          const tempUrlResult = await cloud.getTempFileURL({ fileList });
-          tempUrlResult.fileList.forEach((item) => {
-            if (item.fileID === sticker.videoUrl) tempVideoUrl = item.tempFileURL;
-            if (item.fileID === sticker.coverUrl) tempCoverUrl = item.tempFileURL;
-          });
+          const res = await cloud.getTempFileURL({ fileList: [sticker.videoUrl] });
+          if (res.fileList && res.fileList.length > 0) {
+            tempVideoUrl = res.fileList[0].tempFileURL;
+          }
         } catch (e) {
-          console.warn('转换临时链接失败', e);
+          console.warn('转换视频链接失败', e);
         }
       }
 
-      // ⭐ 从数据库读取位置字段（如果不存在则默认为 0）
+      // ⭐ coverUrl 保留原始 cloud:// fileID，不转换
+      const coverUrl = sticker.coverUrl || '';
+
+      // 位置字段
       const posX = sticker.posX !== undefined ? sticker.posX : 0;
       const posY = sticker.posY !== undefined ? sticker.posY : 0;
       const posZ = sticker.posZ !== undefined ? sticker.posZ : 0;
 
       console.log('📤 返回的位置: posX=', posX, 'posY=', posY, 'posZ=', posZ);
 
-      // ⭐ 确保返回的数据中包含 posX/Y/Z
       return {
         code: 0,
         message: '查询成功',
         data: {
           _id: sticker._id,
           targetId: sticker.targetId,
-          videoUrl: tempVideoUrl,
-          coverUrl: tempCoverUrl,
+          videoUrl: tempVideoUrl,      
+          coverUrl: coverUrl,      
           planeWidth: sticker.planeWidth || 1,
           planeHeight: sticker.planeHeight || 1,
           title: sticker.title || '未命名冰箱贴',
@@ -129,8 +122,8 @@ async function getAllStickers() {
       data: result.data.map(item => ({
         _id: item._id,
         targetId: item.targetId,
-        videoUrl: item.videoUrl,
-        coverUrl: item.coverUrl || '',
+        videoUrl: item.videoUrl,      
+        coverUrl: item.coverUrl || '', 
         planeWidth: item.planeWidth || 1,
         planeHeight: item.planeHeight || 1,
         title: item.title || '',

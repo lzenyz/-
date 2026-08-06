@@ -18,7 +18,7 @@ App({
       crsAppId: '2a91e0a9dc86ccc03aea7eea21430855',
       clientEndUrl: 'https://2a91e0a9dc86ccc03aea7eea21430855.cn1.crs.easyar.com:8443',
       jpegQuality: 0.7,
-      minInterval: 1000,
+      minInterval: 600,
     }
   }
 });
