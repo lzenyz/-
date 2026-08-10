@@ -5,7 +5,7 @@ Page({
     isEmpty: true,
     statusBarHeight: 20,
     navBarHeight: 44,
-    tempUrlCache: {}
+    tempUrlCache: {} // 缓存已转换的临时链接，避免重复请求
   },
 
   onLoad() {
@@ -22,68 +22,96 @@ Page({
   },
 
   onShow() {
-    this.loadStickerList();
+    this.loadStickerList(); // 每次显示都从云端拉取最新数据
   },
 
+  /**
+   * 从云数据库获取所有冰箱贴数据（全量列表）
+   */
   async loadStickerList() {
-    const list = wx.getStorageSync('myStickers') || [];
-    if (list.length === 0) {
-      this.setData({ stickerList: [], isEmpty: true });
-      return;
-    }
+    try {
+      wx.showLoading({ title: '加载中...', mask: true });
+      const res = await wx.cloud.callFunction({
+        name: 'quickstartFunctions',
+        data: { action: 'getAllStickers' }
+      });
+      wx.hideLoading();
 
-    // 收集所有 cloud:// 封面链接
-    const cloudFileIds = list
-      .map(item => item.coverUrl)
-      .filter(url => url && url.startsWith('cloud://'));
+      if (res.result && res.result.code === 0) {
+        let list = res.result.data || [];
 
-    let tempUrlMap = {};
-    if (cloudFileIds.length > 0) {
-      try {
-        const uniqueIds = [...new Set(cloudFileIds)];
-        const needConvert = uniqueIds.filter(id => !this.data.tempUrlCache[id]);
-        let converted = {};
-        if (needConvert.length > 0) {
-          const res = await wx.cloud.getTempFileURL({ fileList: needConvert });
-          if (res.fileList) {
-            res.fileList.forEach(item => {
-              if (item.tempFileURL) {
-                converted[item.fileID] = item.tempFileURL;
-                this.data.tempUrlCache[item.fileID] = item.tempFileURL;
+        // 收集所有 cloud:// 封面链接
+        const cloudFileIds = list
+          .map(item => item.coverUrl)
+          .filter(url => url && typeof url === 'string' && url.startsWith('cloud://'));
+
+        let tempUrlMap = {};
+        if (cloudFileIds.length > 0) {
+          try {
+            const uniqueIds = [...new Set(cloudFileIds)];
+            // 从缓存中取已转换的
+            const cached = this.data.tempUrlCache || {};
+            const needConvert = uniqueIds.filter(id => !cached[id]);
+            let converted = {};
+            if (needConvert.length > 0) {
+              const result = await wx.cloud.getTempFileURL({ fileList: needConvert });
+              if (result.fileList) {
+                result.fileList.forEach(item => {
+                  if (item.tempFileURL) {
+                    converted[item.fileID] = item.tempFileURL;
+                  }
+                });
               }
-            });
+            }
+            // 合并缓存和新转换的
+            tempUrlMap = { ...cached, ...converted };
+            this.data.tempUrlCache = tempUrlMap; // 更新缓存
+          } catch (e) {
+            console.error('获取临时链接失败', e);
           }
         }
-        tempUrlMap = { ...this.data.tempUrlCache, ...converted };
-      } catch (e) {
-        console.error('获取临时链接失败', e);
+
+        // 替换封面链接为临时 HTTPS URL（供 image 组件使用）
+        const processedList = list.map(item => {
+          let coverUrl = item.coverUrl;
+          if (coverUrl && coverUrl.startsWith('cloud://') && tempUrlMap[coverUrl]) {
+            coverUrl = tempUrlMap[coverUrl];
+          }
+          return {
+            ...item,
+            coverUrl: coverUrl || '' // 若无封面则置空，触发 fallback
+          };
+        });
+
+        this.setData({
+          stickerList: processedList,
+          isEmpty: processedList.length === 0
+        });
+      } else {
+        throw new Error(res.result?.message || '获取数据失败');
       }
+    } catch (err) {
+      wx.hideLoading();
+      console.error('加载列表失败', err);
+      wx.showToast({ title: '加载失败，请重试', icon: 'none' });
     }
-
-    const newList = list.map(item => {
-      let coverUrl = item.coverUrl;
-      if (item.coverUrl && item.coverUrl.startsWith('cloud://') && tempUrlMap[item.coverUrl]) {
-        coverUrl = tempUrlMap[item.coverUrl];
-      }
-      return { ...item, coverUrl };
-    });
-
-    this.setData({
-      stickerList: newList,
-      isEmpty: false
-    });
   },
 
-  // ⭐ 图片加载失败时的降级处理
+  /**
+   * 图片加载失败时的降级处理（将错误链接置空，显示备用图标）
+   */
   onImageError(e) {
     const index = e.currentTarget.dataset.index;
     const list = this.data.stickerList;
     if (list[index]) {
-      list[index].coverUrl = ''; // 清空错误链接，触发 fallback
+      list[index].coverUrl = '';
       this.setData({ stickerList: list });
     }
   },
 
+  /**
+   * 扫码添加冰箱贴
+   */
   onScanTap() {
     wx.scanCode({
       onlyFromCamera: false,
@@ -102,6 +130,9 @@ Page({
     });
   },
 
+  /**
+   * 根据 targetId 获取数据并跳转 AR（同时存入本地缓存作为收藏）
+   */
   fetchStickerDataAndGoAR(targetId) {
     wx.showLoading({ title: '正在获取数据...', mask: true });
 
@@ -112,7 +143,6 @@ Page({
         const result = res.result || {};
         if (result.code === 0 && result.data) {
           this.addStickerToCache(result.data);
-          // ⭐ 跳转时带上 targetId
           this.goToAR(targetId);
           wx.hideLoading();
           setTimeout(() => {
@@ -131,6 +161,9 @@ Page({
     });
   },
 
+  /**
+   * 将单个冰箱贴数据存入本地缓存（收藏功能）
+   */
   addStickerToCache(sticker) {
     const list = wx.getStorageSync('myStickers') || [];
     const isExist = list.some(item => item.targetId === sticker.targetId);
@@ -141,13 +174,15 @@ Page({
       targetId: sticker.targetId,
       title: sticker.title || '未命名冰箱贴',
       videoUrl: sticker.videoUrl,
-      coverUrl: sticker.coverUrl || '' // 存储 cloud://
+      coverUrl: sticker.coverUrl || '' // 存储原始 cloud://
     });
     wx.setStorageSync('myStickers', list);
     return true;
   },
 
-  // ⭐ 跳转 AR 页，带上 targetId 参数
+  /**
+   * 跳转到 AR 页面，携带 targetId
+   */
   goToAR(targetId) {
     wx.navigateTo({
       url: `/pages/ar/ar?targetId=${encodeURIComponent(targetId)}`,
@@ -158,7 +193,9 @@ Page({
     });
   },
 
-  // ⭐ 点击卡片时，获取 targetId 并跳转
+  /**
+   * 点击卡片，跳转 AR 展示对应冰箱贴
+   */
   onStickerTap(e) {
     const targetId = e.currentTarget.dataset.targetId;
     if (targetId) {
