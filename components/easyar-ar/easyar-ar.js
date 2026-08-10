@@ -15,12 +15,6 @@ Component({
     'runingCrs, tracking': function (value1, value2) {
       if (value1 && !this.data.arReady) {
         console.warn('⚠️ runingCrs 已开启但 AR 未就绪，等待中...');
-        // 已注释弹窗，避免干扰
-        // wx.showModal({
-        //   title: 'AR系统未启动',
-        //   content: '可能是你的相机未启动或不支持XR-FRAME',
-        //   showCancel: false,
-        // });
       }
       if (!value2) {
         this.stopTracking();
@@ -41,6 +35,7 @@ Component({
   crsClient: undefined,
   pendingVideo: null,
   isLoading: false,
+  _audioCtx: null, // 保存音频上下文
 
   lifetimes: {
     attached() {
@@ -72,6 +67,10 @@ Component({
     },
     detached() {
       // 组件销毁时清理资源
+      if (this._audioCtx) {
+        this._audioCtx.destroy();
+        this._audioCtx = null;
+      }
     },
   },
 
@@ -151,7 +150,6 @@ Component({
     handleARReady: function ({ detail }) {
       this.setData({ arReady: true });
       console.log('✅ AR 系统已就绪');
-      // 触发自定义事件，通知父页面
       this.triggerEvent('arReady', {});
       if (this.pendingVideo && !this.isLoading) {
         this.tryPlayVideo();
@@ -213,6 +211,14 @@ Component({
       }
       this.pendingVideo = null;
       this.isLoading = false;
+      // 停止并销毁音频
+      if (this._audioCtx) {
+        try {
+          this._audioCtx.stop();
+          this._audioCtx.destroy();
+        } catch (e) {}
+        this._audioCtx = null;
+      }
     },
 
     /**
@@ -262,17 +268,52 @@ Component({
 
     /**
      * 外部调用：播放视频（⭐ 支持传入位置偏移）
-     * @param {string} videoUrl - 视频地址
-     * @param {number} planeWidth - 平面宽度
-     * @param {number} planeHeight - 平面高度
-     * @param {number} posX - X轴偏移（默认0）
-     * @param {number} posY - Y轴偏移（默认0）
-     * @param {number} posZ - Z轴偏移（默认0）
+     * 同时启动独立音频播放（利用用户手势）
      */
     playVideoFromUrl(videoUrl, planeWidth, planeHeight, posX = 0, posY = 0, posZ = 0) {
       console.log('🎬 [playVideoFromUrl] 被调用，视频地址:', videoUrl);
       console.log('📐 平面尺寸: width=', planeWidth, 'height=', planeHeight);
       console.log('📍 位置偏移: posX=', posX, 'posY=', posY, 'posZ=', posZ);
+
+      // ⭐ 关键：在用户手势中创建并播放音频（解决自动播放限制）
+      if (this._audioCtx) {
+        // 如果已有音频，停止并重置
+        this._audioCtx.stop();
+        this._audioCtx.destroy();
+        this._audioCtx = null;
+      }
+      try {
+        const audioCtx = wx.createInnerAudioContext();
+        audioCtx.src = videoUrl;
+        audioCtx.loop = true;
+        audioCtx.obeyMuteSwitch = false;
+        
+        // 添加详细事件监听
+        audioCtx.onPlay(() => {
+          console.log('🎵 [事件] onPlay 触发 — 音频正在播放');
+        });
+        audioCtx.onError((err) => {
+          console.error('❌ [事件] onError 音频错误:', err);
+        });
+        audioCtx.onWaiting(() => {
+          console.log('⏳ [事件] onWaiting — 音频缓冲中');
+        });
+        audioCtx.onCanplay(() => {
+          console.log('✅ [事件] onCanplay — 音频可播放，调用 play()');
+          audioCtx.play();
+        });
+        audioCtx.onEnded(() => {
+          console.log('⏹️ [事件] onEnded — 音频播放结束');
+        });
+        
+        // 立即尝试播放
+        audioCtx.play();
+        this._audioCtx = audioCtx;
+        console.log('🎵 音频播放已启动（在 playVideoFromUrl 中，利用手势）');
+      } catch (e) {
+        console.warn('创建音频失败', e);
+      }
+
       this.pendingVideo = { videoUrl, planeWidth, planeHeight, posX, posY, posZ };
       this.isLoading = false;
       if (this.data.arReady && this.data.markerImg) {
@@ -303,7 +344,7 @@ Component({
     },
 
     /**
-     * 播放 SBS 格式的透明视频
+     * 播放 SBS 格式的透明视频（仅负责画面渲染，音频已由 playVideoFromUrl 启动）
      */
     loadSBSVideo: async function (videoUrl, planeWidth, planeHeight, posX = 0, posY = 0, posZ = 0) {
       console.log('📹 [loadSBSVideo] 使用 easyar-video-tsbs 材质播放 SBS 透明视频');
@@ -326,10 +367,26 @@ Component({
             type: 'video-texture',
             assetId: targetId,
             src: videoUrl,
-            options: { autoPlay: true, abortAudio: false, loop: true },
+            options: { 
+              autoPlay: true, 
+              abortAudio: false, 
+              loop: true, 
+              audio: true, 
+              muted: false 
+            },
           });
           asset = v.value;
           console.log('✅ 视频资源加载完成, 宽高:', asset.width, 'x', asset.height);
+
+          // 尝试调用 asset.play()（兼容一些设备，但音频主要靠独立的 InnerAudioContext）
+          if (typeof asset.play === 'function') {
+            try {
+              await asset.play();
+              console.log('🎵 [尝试] asset.play() 已调用');
+            } catch (e) {
+              console.warn('asset.play() 失败', e);
+            }
+          }
         } catch (err) {
           console.error('❌ 加载视频资源失败:', err);
           wx.showToast({ icon: 'none', title: '视频加载失败' });
@@ -338,6 +395,10 @@ Component({
         }
       } else {
         console.log('♻️ 复用已有视频资源');
+        // 复用资源时尝试调用 asset.play()
+        if (typeof asset.play === 'function') {
+          try { await asset.play(); } catch (e) {}
+        }
       }
 
       const { width, height } = asset;
