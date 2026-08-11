@@ -11,13 +11,14 @@
 
   <!-- 列表区域 -->
   <view class="content">
-    <!-- 空状态 -->
+    <!-- 空状态（新用户首次进入：不渲染任何产品） -->
     <view class="empty-state" wx:if="{{isEmpty}}">
       <view class="empty-icon">📦</view>
-      <text class="empty-text">暂未收集冰箱贴，点击右下角扫码添加</text>
+      <text class="empty-text">还没有收藏的产品</text>
+      <text class="empty-sub">请扫描产品上的二维码，添加后可在这里查看</text>
     </view>
 
-    <!-- 卡片列表 -->
+    <!-- 卡片列表（仅展示已扫码收藏的产品） -->
     <view class="list" wx:else>
       <view
         class="card"

@@ -1,5 +1,6 @@
 <!-- pages/ar/ar.wxml -->
-<view class="ar-container">
+<!-- bind:touchstart：iOS 首次触摸用于唤醒视频音频（无感、无需额外按钮） -->
+<view class="ar-container" bind:touchstart="onTouchStart">
   <easyar-ar
     id="easyar-ar"
     runingCrs="{{runingCrs}}"

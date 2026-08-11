@@ -22,79 +22,67 @@ Page({
   },
 
   onShow() {
-    this.loadStickerList(); // 每次显示都从云端拉取最新数据
+    this.loadStickerList(); // 每次显示都刷新（扫码返回后可立即看到新收藏）
   },
 
   /**
-   * 从云数据库获取所有冰箱贴数据（全量列表）
+   * 加载首页产品列表（⭐ 只渲染用户已扫码收藏的产品，新用户首次进入为空）。
+   * 数据来源：本地缓存 myStickers（wx.setStorageSync），不拉取云端全部产品。
    */
   async loadStickerList() {
-    try {
-      wx.showLoading({ title: '加载中...', mask: true });
-      const res = await wx.cloud.callFunction({
-        name: 'quickstartFunctions',
-        data: { action: 'getAllStickers' }
-      });
-      wx.hideLoading();
+    const list = wx.getStorageSync('myStickers') || [];
+    if (!list || list.length === 0) {
+      this.setData({ stickerList: [], isEmpty: true });
+      return;
+    }
 
-      if (res.result && res.result.code === 0) {
-        let list = res.result.data || [];
+    // 收集所有 cloud:// 封面链接，转换为临时 HTTPS 供 image 组件显示
+    const cloudFileIds = list
+      .map(item => item.coverUrl)
+      .filter(url => url && typeof url === 'string' && url.startsWith('cloud://'));
 
-        // 收集所有 cloud:// 封面链接
-        const cloudFileIds = list
-          .map(item => item.coverUrl)
-          .filter(url => url && typeof url === 'string' && url.startsWith('cloud://'));
-
-        let tempUrlMap = {};
-        if (cloudFileIds.length > 0) {
-          try {
-            const uniqueIds = [...new Set(cloudFileIds)];
-            // 从缓存中取已转换的
-            const cached = this.data.tempUrlCache || {};
-            const needConvert = uniqueIds.filter(id => !cached[id]);
-            let converted = {};
-            if (needConvert.length > 0) {
-              const result = await wx.cloud.getTempFileURL({ fileList: needConvert });
-              if (result.fileList) {
-                result.fileList.forEach(item => {
-                  if (item.tempFileURL) {
-                    converted[item.fileID] = item.tempFileURL;
-                  }
-                });
+    let tempUrlMap = {};
+    if (cloudFileIds.length > 0) {
+      try {
+        const uniqueIds = [...new Set(cloudFileIds)];
+        // 从缓存中取已转换的
+        const cached = this.data.tempUrlCache || {};
+        const needConvert = uniqueIds.filter(id => !cached[id]);
+        let converted = {};
+        if (needConvert.length > 0) {
+          const result = await wx.cloud.getTempFileURL({ fileList: needConvert });
+          if (result.fileList) {
+            result.fileList.forEach(item => {
+              if (item.tempFileURL) {
+                converted[item.fileID] = item.tempFileURL;
               }
-            }
-            // 合并缓存和新转换的
-            tempUrlMap = { ...cached, ...converted };
-            this.data.tempUrlCache = tempUrlMap; // 更新缓存
-          } catch (e) {
-            console.error('获取临时链接失败', e);
+            });
           }
         }
-
-        // 替换封面链接为临时 HTTPS URL（供 image 组件使用）
-        const processedList = list.map(item => {
-          let coverUrl = item.coverUrl;
-          if (coverUrl && coverUrl.startsWith('cloud://') && tempUrlMap[coverUrl]) {
-            coverUrl = tempUrlMap[coverUrl];
-          }
-          return {
-            ...item,
-            coverUrl: coverUrl || '' // 若无封面则置空，触发 fallback
-          };
-        });
-
-        this.setData({
-          stickerList: processedList,
-          isEmpty: processedList.length === 0
-        });
-      } else {
-        throw new Error(res.result?.message || '获取数据失败');
+        // 合并缓存和新转换的
+        tempUrlMap = { ...cached, ...converted };
+        this.data.tempUrlCache = tempUrlMap; // 更新缓存
+      } catch (e) {
+        console.error('获取临时链接失败', e);
       }
-    } catch (err) {
-      wx.hideLoading();
-      console.error('加载列表失败', err);
-      wx.showToast({ title: '加载失败，请重试', icon: 'none' });
     }
+
+    // 替换封面链接为临时 HTTPS URL（供 image 组件使用）
+    const processedList = list.map(item => {
+      let coverUrl = item.coverUrl;
+      if (coverUrl && coverUrl.startsWith('cloud://') && tempUrlMap[coverUrl]) {
+        coverUrl = tempUrlMap[coverUrl];
+      }
+      return {
+        ...item,
+        coverUrl: coverUrl || '' // 若无封面则置空，触发 fallback
+      };
+    });
+
+    this.setData({
+      stickerList: processedList,
+      isEmpty: processedList.length === 0
+    });
   },
 
   /**

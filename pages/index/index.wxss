@@ -54,11 +54,20 @@
 }
 
 .empty-text {
-  font-size: 28rpx;
-  color: #999;
+  font-size: 30rpx;
+  color: #666;
   text-align: center;
   line-height: 1.6;
   padding: 0 60rpx;
+  font-weight: 500;
+}
+
+.empty-sub {
+  font-size: 26rpx;
+  color: #999;
+  text-align: center;
+  line-height: 1.6;
+  padding: 12rpx 60rpx 0;
 }
 
 /* 列表容器：普通流式布局，由页面本身滚动 */

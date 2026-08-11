@@ -1,6 +1,8 @@
 // components/easyar-ar/easyar-ar.js
+// 识别与播放逻辑与原版（安卓可跑通）保持一致：
+//   handleTick 截图 -> searchByBase64 -> trackingImage(base64) -> loadTrackingImage 写本地文件
+//   -> markerImg 就绪 -> tryPlayVideo -> loadSBSVideo 播放视频
 import CrsClient from '../libs/crs-client';
-import { atob } from '../libs/atob';
 
 Component({
   properties: {
@@ -35,7 +37,10 @@ Component({
   crsClient: undefined,
   pendingVideo: null,
   isLoading: false,
-  _audioCtx: null, // 保存音频上下文
+  _effectsRegistered: false, // Effect/Material 是否已注册
+  _videoAsset: null,          // 当前视频纹理资源（用于触摸唤醒音频）
+  _audioUnlocked: false,      // 音频是否已被触摸唤醒
+  _lastErrToast: 0,           // 识别错误提示节流时间戳
 
   lifetimes: {
     attached() {
@@ -67,10 +72,7 @@ Component({
     },
     detached() {
       // 组件销毁时清理资源
-      if (this._audioCtx) {
-        this._audioCtx.destroy();
-        this._audioCtx = null;
-      }
+      this._videoAsset = null;
     },
   },
 
@@ -83,7 +85,13 @@ Component({
       this.shadowRoot = this.scene.getElementById('shadow-root');
       this.xrFrameSystem = wx.getXrFrameSystem();
       console.log('✅ XR-Frame 场景已就绪');
-    
+
+      // 防止重复注册（handleReady 偶发触发多次时避免报错）
+      if (this._effectsRegistered) {
+        return;
+      }
+      this._effectsRegistered = true;
+
       // 注册 Effect
       this.xrFrameSystem.registerEffect('my-video-tsbs', scene => scene.createEffect({
         name: "my-video-tsbs",
@@ -136,9 +144,9 @@ Component({
           }`
         ]
       }));
-    
+
       // 注册 Material
-      this.xrFrameSystem.registerMaterial("videoTransparentSideBySide", scene => 
+      this.xrFrameSystem.registerMaterial("videoTransparentSideBySide", scene =>
         scene.createMaterial(scene.assets.getAsset('effect', 'my-video-tsbs'))
       );
       console.log('✅ 自定义 SBS Effect 和 Material 注册成功');
@@ -157,36 +165,49 @@ Component({
     },
 
     /**
-     * 每帧执行，用于截图并触发云识别
+     * 每帧执行，用于截图并触发云识别（与原版逻辑一致）
      */
     handleTick() {
-      if (!this.data.arReady || !this.properties.runingCrs || !this.crsClient || this.data.isSearching) {
-        return;
-      }
+      try {
+        if (!this.data.arReady || !this.properties.runingCrs || !this.crsClient || this.data.isSearching) {
+          return;
+        }
 
-      const now = Date.now();
-      if (now - this.data.lastTime < this.config.minInterval) {
-        return;
-      }
-      this.data.lastTime = now;
-      this.data.isSearching = true;
+        const now = Date.now();
+        if (now - this.data.lastTime < this.config.minInterval) {
+          return;
+        }
+        this.data.lastTime = now;
+        this.data.isSearching = true;
 
-      this.capture()
-        .then(base64 => this.crsClient.searchByBase64(base64.split('base64,').pop()))
-        .then(res => {
-          this.data.isSearching = false;
-          console.info('🔍 CRS识别结果:', res);
-          if (res.statusCode != 0) {
-            return;
-          }
-          this.triggerEvent('searchSuccess', { targetId: res.result.target.targetId }, {});
-          const target = res.result.target;
-          this.loadTrackingImage(target.trackingImage.replace(/[\r\n]/g, ''));
-        })
-        .catch(err => {
-          this.data.isSearching = false;
-          console.error('❌ CRS识别错误:', err);
-        });
+        this.capture()
+          .then(base64 => this.crsClient.searchByBase64(base64.split('base64,').pop()))
+          .then(res => {
+            this.data.isSearching = false;
+            console.info('🔍 CRS识别结果:', res);
+            if (res.statusCode != 0) {
+              return;
+            }
+            this.triggerEvent('searchSuccess', { targetId: res.result.target.targetId }, {});
+            const target = res.result.target;
+            this.loadTrackingImage(target.trackingImage.replace(/[\r\n]/g, ''));
+          })
+          .catch(err => {
+            this.data.isSearching = false;
+            const msg = (err && (err.errMsg || err.message)) ? (err.errMsg || err.message) : JSON.stringify(err);
+            console.error('❌ CRS识别错误:', msg);
+            // 识别异常时在屏幕上提示一次，避免“无反应”难以定位
+            const now2 = Date.now();
+            if (now2 - this._lastErrToast > 10000) {
+              this._lastErrToast = now2;
+              wx.showToast({ icon: 'none', title: '识别服务异常:' + String(msg).slice(0, 16) });
+            }
+          });
+      } catch (e) {
+        // 兜底：tick 回调内异常不能导致识别循环静默中断
+        console.error('❌ [CRS] handleTick 异常:', e);
+        this.data.isSearching = false;
+      }
     },
 
     /**
@@ -211,18 +232,11 @@ Component({
       }
       this.pendingVideo = null;
       this.isLoading = false;
-      // 停止并销毁音频
-      if (this._audioCtx) {
-        try {
-          this._audioCtx.stop();
-          this._audioCtx.destroy();
-        } catch (e) {}
-        this._audioCtx = null;
-      }
+      this._videoAsset = null;
     },
 
     /**
-     * 加载跟踪图（识别图）
+     * 加载跟踪图（识别图）到本地，供 xr-ar-tracker 使用（与原版逻辑一致）
      */
     loadTrackingImage(img) {
       const filePath = `${wx.env.USER_DATA_PATH}/marker.jpg`;
@@ -240,7 +254,9 @@ Component({
             this.tryPlayVideo();
           }
         },
-        fail: (err) => reject(err),
+        fail: (err) => {
+          console.error('❌ 写入跟踪图失败:', err);
+        },
       });
     },
 
@@ -259,7 +275,12 @@ Component({
           }
         },
         fail: (err) => {
-          console.error('❌ 压缩图片失败:', err);
+          // iOS 压缩失败时降级使用原路径，保证跟踪图仍能加载
+          console.warn('⚠️ 压缩图片失败，降级使用原路径:', err);
+          this.setData({ markerImg: filePath });
+          if (this.pendingVideo && !this.isLoading) {
+            this.tryPlayVideo();
+          }
         },
       });
     },
@@ -268,52 +289,17 @@ Component({
 
     /**
      * 外部调用：播放视频（⭐ 支持传入位置偏移）
-     * 同时启动独立音频播放（利用用户手势）
+     * @param {string} videoUrl - 视频地址
+     * @param {number} planeWidth - 平面宽度
+     * @param {number} planeHeight - 平面高度
+     * @param {number} posX - X轴偏移（默认0）
+     * @param {number} posY - Y轴偏移（默认0）
+     * @param {number} posZ - Z轴偏移（默认0）
      */
     playVideoFromUrl(videoUrl, planeWidth, planeHeight, posX = 0, posY = 0, posZ = 0) {
       console.log('🎬 [playVideoFromUrl] 被调用，视频地址:', videoUrl);
       console.log('📐 平面尺寸: width=', planeWidth, 'height=', planeHeight);
       console.log('📍 位置偏移: posX=', posX, 'posY=', posY, 'posZ=', posZ);
-
-      // ⭐ 关键：在用户手势中创建并播放音频（解决自动播放限制）
-      if (this._audioCtx) {
-        // 如果已有音频，停止并重置
-        this._audioCtx.stop();
-        this._audioCtx.destroy();
-        this._audioCtx = null;
-      }
-      try {
-        const audioCtx = wx.createInnerAudioContext();
-        audioCtx.src = videoUrl;
-        audioCtx.loop = true;
-        audioCtx.obeyMuteSwitch = false;
-        
-        // 添加详细事件监听
-        audioCtx.onPlay(() => {
-          console.log('🎵 [事件] onPlay 触发 — 音频正在播放');
-        });
-        audioCtx.onError((err) => {
-          console.error('❌ [事件] onError 音频错误:', err);
-        });
-        audioCtx.onWaiting(() => {
-          console.log('⏳ [事件] onWaiting — 音频缓冲中');
-        });
-        audioCtx.onCanplay(() => {
-          console.log('✅ [事件] onCanplay — 音频可播放，调用 play()');
-          audioCtx.play();
-        });
-        audioCtx.onEnded(() => {
-          console.log('⏹️ [事件] onEnded — 音频播放结束');
-        });
-        
-        // 立即尝试播放
-        audioCtx.play();
-        this._audioCtx = audioCtx;
-        console.log('🎵 音频播放已启动（在 playVideoFromUrl 中，利用手势）');
-      } catch (e) {
-        console.warn('创建音频失败', e);
-      }
-
       this.pendingVideo = { videoUrl, planeWidth, planeHeight, posX, posY, posZ };
       this.isLoading = false;
       if (this.data.arReady && this.data.markerImg) {
@@ -344,7 +330,7 @@ Component({
     },
 
     /**
-     * 播放 SBS 格式的透明视频（仅负责画面渲染，音频已由 playVideoFromUrl 启动）
+     * 播放 SBS 格式的透明视频（与原版逻辑一致，仅补充视频自带音频）
      */
     loadSBSVideo: async function (videoUrl, planeWidth, planeHeight, posX = 0, posY = 0, posZ = 0) {
       console.log('📹 [loadSBSVideo] 使用 easyar-video-tsbs 材质播放 SBS 透明视频');
@@ -367,26 +353,11 @@ Component({
             type: 'video-texture',
             assetId: targetId,
             src: videoUrl,
-            options: { 
-              autoPlay: true, 
-              abortAudio: false, 
-              loop: true, 
-              audio: true, 
-              muted: false 
-            },
+            // 音频由视频纹理自带，识别到产品后自动带声播放，不额外创建播放器（无双音冲突）
+            options: { autoPlay: true, abortAudio: false, loop: true, audio: true, muted: false },
           });
           asset = v.value;
           console.log('✅ 视频资源加载完成, 宽高:', asset.width, 'x', asset.height);
-
-          // 尝试调用 asset.play()（兼容一些设备，但音频主要靠独立的 InnerAudioContext）
-          if (typeof asset.play === 'function') {
-            try {
-              await asset.play();
-              console.log('🎵 [尝试] asset.play() 已调用');
-            } catch (e) {
-              console.warn('asset.play() 失败', e);
-            }
-          }
         } catch (err) {
           console.error('❌ 加载视频资源失败:', err);
           wx.showToast({ icon: 'none', title: '视频加载失败' });
@@ -395,12 +366,9 @@ Component({
         }
       } else {
         console.log('♻️ 复用已有视频资源');
-        // 复用资源时尝试调用 asset.play()
-        if (typeof asset.play === 'function') {
-          try { await asset.play(); } catch (e) {}
-        }
       }
 
+      this._videoAsset = asset;
       const { width, height } = asset;
 
       const oldPlayer = this.scene.getElementById('player');
@@ -408,6 +376,7 @@ Component({
 
       console.log(`🎨 使用材质: easyar-video-tsbs, uniforms: u_baseColorMap:video-${targetId}`);
 
+      // 与原版一致：使用 XRMesh 创建视频平面（安卓已验证可渲染）
       const el = this.scene.createElement(this.xrFrameSystem.XRMesh, {
         geometry: 'plane',
         material: 'videoTransparentSideBySide',
@@ -438,6 +407,23 @@ Component({
       this.isLoading = false;
       this.pendingVideo = null;
       console.log('🎉 [loadSBSVideo] 完成');
+    },
+
+    /**
+     * 触摸唤醒音频：iOS 上首次用户触摸时调用，
+     * 解除「非用户手势创建播放器被静音」的限制（无需额外按钮，轻点屏幕即可）。
+     */
+    unlockAudio() {
+      if (this._audioUnlocked) return;
+      if (this._videoAsset && typeof this._videoAsset.play === 'function') {
+        try {
+          this._videoAsset.play();
+          this._audioUnlocked = true;
+          console.log('🎵 [unlockAudio] 触摸已唤醒视频音频');
+        } catch (e) {
+          console.warn('unlockAudio 失败', e);
+        }
+      }
     },
 
     loadVideo: async function (targetId, setting) {
