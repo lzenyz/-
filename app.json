@@ -16,12 +16,13 @@
       "provider": "wx27fa3b52b5462e8f"
     }
   },
+
   "permission": {
-    "requiredPrivateInfos": ["camera"],
     "scope.camera": {
       "desc": "用于AR识别冰箱贴"
     }
   },
+
   "requiredPrivateInfos": [],
   "style": "v2",
   "sitemapLocation": "sitemap.json"
