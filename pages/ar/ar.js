@@ -21,10 +21,19 @@ Page({
   expectedTargetId: null,
 
   onLoad(options) {
-    // ⭐ 从页面参数获取期望的 targetId
-    if (options && options.targetId) {
-      this.expectedTargetId = decodeURIComponent(options.targetId);
+    // ⭐ 兼容两种进入方式：
+    // 1) 首页扫码后跳转：options.targetId（或带地址的形式）
+    // 2) 微信扫一扫打开「小程序码」：options.scene = 去掉横杠的 targetId（32位十六进制）
+    let targetId = this._normalizeTargetId(options && options.targetId);
+    if (!targetId && options && options.scene) {
+      targetId = this._targetIdFromScene(options.scene);
+    }
+
+    if (targetId) {
+      this.expectedTargetId = targetId;
       console.log('🎯 期望识别的 targetId:', this.expectedTargetId);
+      // 从小程序码/直链进入时，把产品写入首页收藏缓存（返回首页即可切换）
+      this.ensureInCollection(targetId);
     } else {
       console.warn('⚠️ 未传入 targetId，将响应任意识别结果');
     }
@@ -36,6 +45,68 @@ Page({
       dpi: sys.pixelRatio,
     });
     console.log('📱 AR页面加载，配置:', this.data.config);
+  },
+
+  /**
+   * 规范化 targetId：容忍误传带地址的形式 pages/ar/ar?targetId=xxx
+   */
+  _normalizeTargetId(str) {
+    if (!str) return '';
+    let s = String(str).trim();
+    const m = s.match(/[?&]targetId=([^&#]+)/);
+    if (m) s = m[1];
+    try { s = decodeURIComponent(s); } catch (e) {}
+    return s;
+  },
+
+  /**
+   * 小程序码 scene 还原为 targetId。
+   * 兼容三种形态：
+   *   1) 去掉横杠的 32 位 hex（平台 scene 上限 32 字符，推荐）：50ad7636934f4522b831c577dec0564c
+   *   2) 完整 UUID：50ad7636-934f-4522-b831-c577dec0564c
+   *   3) 带前缀：targetId=xxx 或 pages/ar/ar?targetId=xxx
+   */
+  _targetIdFromScene(scene) {
+    try { scene = decodeURIComponent(String(scene)); } catch (e) {}
+    let s = String(scene).trim();
+    const m = s.match(/[?&]targetId=([^&#]+)/);
+    if (m) s = m[1];
+    const hex = s.trim();
+    const u = hex.match(/^([0-9a-fA-F]{8})([0-9a-fA-F]{4})([0-9a-fA-F]{4})([0-9a-fA-F]{4})([0-9a-fA-F]{12})$/);
+    if (u) {
+      return `${u[1]}-${u[2]}-${u[3]}-${u[4]}-${u[5]}`;
+    }
+    return hex; // 非 UUID 形态的短码原样返回
+  },
+
+  /**
+   * 把产品写入首页收藏缓存（myStickers），返回首页即可看到并切换
+   */
+  ensureInCollection(targetId) {
+    const list = wx.getStorageSync('myStickers') || [];
+    if (list.some(item => item.targetId === targetId)) return;
+    wx.cloud.callFunction({
+      name: 'quickstartFunctions',
+      data: { action: 'getStickerDataByTargetId', targetId: targetId },
+      success: (res) => {
+        const r = res.result || {};
+        if (r.code === 0 && r.data) {
+          const list2 = wx.getStorageSync('myStickers') || [];
+          if (!list2.some(item => item.targetId === targetId)) {
+            list2.push({
+              _id: r.data._id,
+              targetId: targetId,
+              title: r.data.title || '未命名冰箱贴',
+              videoUrl: r.data.videoUrl,
+              coverUrl: r.data.coverUrl || '',
+            });
+            wx.setStorageSync('myStickers', list2);
+            console.log('📥 已加入首页收藏缓存:', targetId);
+          }
+        }
+      },
+      fail: (err) => console.warn('缓存收藏失败', err),
+    });
   },
 
   onARReady() {

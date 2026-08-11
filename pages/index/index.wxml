@@ -3,7 +3,7 @@
   <!-- 自定义导航栏 -->
   <view class="nav-bar" style="padding-top: {{statusBarHeight}}px; height: {{navBarHeight + statusBarHeight}}px;">
     <view class="nav-bar-inner" style="height: {{navBarHeight}}px;">
-      <text class="nav-title">我的冰箱贴收藏</text>
+      <text class="nav-title">{{navTitle}}</text>
     </view>
   </view>
   <!-- 占位，避免内容被导航栏遮挡 -->
@@ -11,14 +11,14 @@
 
   <!-- 列表区域 -->
   <view class="content">
-    <!-- 空状态（新用户首次进入：不渲染任何产品） -->
+    <!-- 空状态（数据库无产品，或收藏模式且未扫码） -->
     <view class="empty-state" wx:if="{{isEmpty}}">
       <view class="empty-icon">📦</view>
-      <text class="empty-text">还没有收藏的产品</text>
-      <text class="empty-sub">请扫描产品上的二维码，添加后可在这里查看</text>
+      <text class="empty-text">{{emptyTitle}}</text>
+      <text class="empty-sub">{{emptySub}}</text>
     </view>
 
-    <!-- 卡片列表（仅展示已扫码收藏的产品） -->
+    <!-- 卡片列表（默认展示数据库全部产品） -->
     <view class="list" wx:else>
       <view
         class="card"

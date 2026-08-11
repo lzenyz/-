@@ -143,11 +143,20 @@ export default class CrsClient {
 
   /** 大图上传云存储临时目录，返回 fileID */
   _uploadTempImage(img) {
-    const arrayBuffer = wx.base64ToArrayBuffer(img);
+    // 先把 base64 写入本地临时文件，再用 filePath 上传，
+    // 避免 wx.cloud.uploadFile 传 fileContent 在某些设备上报
+    // “parameter.filePath should be string instead of undefined”。
+    const fs = wx.getFileSystemManager();
+    const tmpPath = `${wx.env.USER_DATA_PATH}/crs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
+    try {
+      fs.writeFileSync(tmpPath, img, 'base64');
+    } catch (e) {
+      return Promise.reject(new Error('写入临时图片失败: ' + ((e && e.message) || e)));
+    }
     const cloudPath = 'crs_tmp/' + Date.now() + '_' + Math.random().toString(36).slice(2, 10) + '.jpg';
     return wx.cloud.uploadFile({
       cloudPath: cloudPath,
-      fileContent: arrayBuffer,
+      filePath: tmpPath,
     }).then(res => res.fileID);
   }
 }

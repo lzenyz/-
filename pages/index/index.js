@@ -3,6 +3,9 @@ Page({
   data: {
     stickerList: [],
     isEmpty: true,
+    navTitle: 'AR 冰箱贴',
+    emptyTitle: '暂无产品',
+    emptySub: '商家还没有上架产品',
     statusBarHeight: 20,
     navBarHeight: 44,
     tempUrlCache: {} // 缓存已转换的临时链接，避免重复请求
@@ -19,24 +22,83 @@ Page({
     } catch (e) {
       console.warn('获取系统信息失败', e);
     }
+
+    // 根据首页模式设置标题与空状态文案
+    if (this._homeMode() === 'collection') {
+      this.setData({
+        navTitle: '我的冰箱贴收藏',
+        emptyTitle: '还没有收藏的产品',
+        emptySub: '请扫描产品上的二维码，添加后可在这里查看',
+      });
+    }
   },
 
   onShow() {
-    this.loadStickerList(); // 每次显示都刷新（扫码返回后可立即看到新收藏）
+    this.loadStickerList(); // 每次显示都刷新
   },
 
   /**
-   * 加载首页产品列表（⭐ 只渲染用户已扫码收藏的产品，新用户首次进入为空）。
-   * 数据来源：本地缓存 myStickers（wx.setStorageSync），不拉取云端全部产品。
+   * 首页模式：'all' 展示数据库全部产品（默认）；'collection' 只显示扫码收藏的产品
+   */
+  _homeMode() {
+    return (getApp().globalData && getApp().globalData.homeMode) || 'all';
+  },
+
+  /**
+   * 加载首页产品列表
    */
   async loadStickerList() {
-    const list = wx.getStorageSync('myStickers') || [];
-    if (!list || list.length === 0) {
-      this.setData({ stickerList: [], isEmpty: true });
-      return;
+    if (this._homeMode() === 'collection') {
+      await this._loadCollected();
+    } else {
+      await this._loadAllFromDb();
     }
+  },
 
-    // 收集所有 cloud:// 封面链接，转换为临时 HTTPS 供 image 组件显示
+  /**
+   * 收藏模式：只渲染用户扫码收藏的产品（本地缓存 myStickers）
+   */
+  async _loadCollected() {
+    const list = wx.getStorageSync('myStickers') || [];
+    const processedList = await this._resolveCovers(list);
+    this.setData({
+      stickerList: processedList,
+      isEmpty: processedList.length === 0
+    });
+  },
+
+  /**
+   * 默认模式：展示数据库里的所有产品（含图片），图片走云存储临时链接
+   */
+  async _loadAllFromDb() {
+    try {
+      const res = await wx.cloud.callFunction({
+        name: 'quickstartFunctions',
+        data: { action: 'getAllStickers' },
+      });
+      const result = res.result || {};
+      if (result.code === 0) {
+        const list = result.data || [];
+        const processedList = await this._resolveCovers(list);
+        this.setData({
+          stickerList: processedList,
+          isEmpty: processedList.length === 0
+        });
+      } else {
+        this.setData({ stickerList: [], isEmpty: true });
+      }
+    } catch (err) {
+      console.error('加载产品列表失败', err);
+      this.setData({ stickerList: [], isEmpty: true });
+    }
+  },
+
+  /**
+   * 把列表中的 cloud:// 封面转换为临时 HTTPS 链接供 image 显示；非 cloud:// 原样保留
+   */
+  async _resolveCovers(list) {
+    if (!list || list.length === 0) return [];
+
     const cloudFileIds = list
       .map(item => item.coverUrl)
       .filter(url => url && typeof url === 'string' && url.startsWith('cloud://'));
@@ -45,7 +107,6 @@ Page({
     if (cloudFileIds.length > 0) {
       try {
         const uniqueIds = [...new Set(cloudFileIds)];
-        // 从缓存中取已转换的
         const cached = this.data.tempUrlCache || {};
         const needConvert = uniqueIds.filter(id => !cached[id]);
         let converted = {};
@@ -59,16 +120,14 @@ Page({
             });
           }
         }
-        // 合并缓存和新转换的
         tempUrlMap = { ...cached, ...converted };
-        this.data.tempUrlCache = tempUrlMap; // 更新缓存
+        this.data.tempUrlCache = tempUrlMap;
       } catch (e) {
         console.error('获取临时链接失败', e);
       }
     }
 
-    // 替换封面链接为临时 HTTPS URL（供 image 组件使用）
-    const processedList = list.map(item => {
+    return list.map(item => {
       let coverUrl = item.coverUrl;
       if (coverUrl && coverUrl.startsWith('cloud://') && tempUrlMap[coverUrl]) {
         coverUrl = tempUrlMap[coverUrl];
@@ -78,11 +137,6 @@ Page({
         coverUrl: coverUrl || '' // 若无封面则置空，触发 fallback
       };
     });
-
-    this.setData({
-      stickerList: processedList,
-      isEmpty: processedList.length === 0
-    });
   },
 
   /**
@@ -91,31 +145,59 @@ Page({
   onImageError(e) {
     const index = e.currentTarget.dataset.index;
     const list = this.data.stickerList;
-    if (list[index]) {
-      list[index].coverUrl = '';
+    const failed = list[index];
+    if (failed) {
+      console.warn('⚠️ 图片加载失败(可能是域名未配置或文件不存在):', failed.coverUrl);
+      failed.coverUrl = '';
       this.setData({ stickerList: list });
     }
   },
 
+
   /**
    * 扫码添加冰箱贴
+   * 兼容三种二维码内容（生成二维码时推荐用第 1 种）：
+   *   1) 纯 targetId：50ad7636-934f-4522-b831-c577dec0564c
+   *   2) 页面地址：pages/ar/ar?targetId=50ad7636-...
+   *   3) 小程序码（未来若使用）：res.path = pages/ar/ar?targetId=...
    */
   onScanTap() {
     wx.scanCode({
       onlyFromCamera: false,
       scanType: ['qrCode'],
       success: (res) => {
-        const targetId = (res.result || '').trim();
+        const targetId = this._extractTargetId(res.result) || this._extractTargetId(res.path);
         if (!targetId) {
-          wx.showToast({ title: '二维码内容为空', icon: 'none' });
+          wx.showToast({ title: '二维码内容无效', icon: 'none' });
           return;
         }
+        console.log('🎯 扫码解析到 targetId:', targetId);
         this.fetchStickerDataAndGoAR(targetId);
       },
       fail: (err) => {
         console.log('扫码取消或失败', err);
       }
     });
+  },
+
+  /**
+   * 从二维码原文中解析 targetId
+   */
+  _extractTargetId(str) {
+    if (!str) return '';
+    const text = String(str).trim();
+    const m = text.match(/[?&]targetId=([^&#]+)/);
+    if (m) {
+      try {
+        return decodeURIComponent(m[1]);
+      } catch (e) {
+        return m[1];
+      }
+    }
+    if (/^[A-Za-z0-9][A-Za-z0-9\-_.~]{1,64}$/.test(text)) {
+      return text;
+    }
+    return '';
   },
 
   /**
@@ -162,7 +244,7 @@ Page({
       targetId: sticker.targetId,
       title: sticker.title || '未命名冰箱贴',
       videoUrl: sticker.videoUrl,
-      coverUrl: sticker.coverUrl || '' // 存储原始 cloud://
+      coverUrl: sticker.coverUrl || ''
     });
     wx.setStorageSync('myStickers', list);
     return true;

@@ -65,6 +65,8 @@ exports.main = async (event, context) => {
         return await easyarSearch(params);
       case 'easyarDiagnose':
         return await easyarDiagnose();
+      case 'getMiniProgramCode':
+        return await getMiniProgramCode(params);
       default:
         return {
           code: 400,
@@ -351,6 +353,46 @@ async function easyarSearch(params) {
         console.warn('清理临时图片失败(可忽略):', tmpFileID, e && e.message);
       }
     }
+  }
+}
+
+/**
+ * 生成产品小程序码（贴在产品上，用户微信扫一扫直接进入 AR 识别页）。
+ * 说明：wxacode.getUnlimited 的 scene 最多 32 个字符，
+ * 因此把 36 位 UUID 去掉横杠（32 位十六进制）作为 scene；
+ * AR 页收到 scene 后会还原为 UUID。
+ * @param {{ targetId: string, envVersion?: string }} params
+ */
+async function getMiniProgramCode(params) {
+  const targetId = params && params.targetId;
+  if (!targetId) {
+    return { code: 400, message: 'targetId 不能为空' };
+  }
+  const scene = String(targetId).replace(/-/g, '');
+  if (scene.length > 32) {
+    return { code: 400, message: 'targetId 过长，无法生成小程序码(>32字符)' };
+  }
+  const envVersion = (params && params.envVersion) || 'release'; // release / trial / develop
+  try {
+    const res = await cloud.openapi.wxacode.getUnlimited({
+      scene: scene,
+      page: 'pages/ar/ar',
+      checkPath: false,
+      envVersion: envVersion,
+      width: 430,
+    });
+    return {
+      code: 0,
+      message: 'ok',
+      data: res.buffer.toString('base64'),
+    };
+  } catch (e) {
+    console.error('生成小程序码失败:', e);
+    return {
+      code: 500,
+      message: '生成失败',
+      error: (e && (e.errMsg || e.message)) || String(e),
+    };
   }
 }
 
