@@ -327,6 +327,13 @@ Page({
     wx.showToast({ icon: 'none', title: '视频加载失败，请重试' });
   },
 
+  /** 识别图加载失败（诊断用） */
+  onTrackerError(e) {
+    const msg = (e && e.detail && e.detail.message) || '识别图加载失败';
+    console.error('❌ 识别图错误:', msg);
+    wx.showToast({ icon: 'none', title: '识别图加载失败' });
+  },
+
   /**
    * 任意触摸：唤醒视频音频（iOS 需要一次用户手势才能带声播放，无需额外按钮）
    */

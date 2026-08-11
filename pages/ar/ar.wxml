@@ -16,6 +16,7 @@
     bind:arReady="onARReady"
     bind:track="onTrack"
     bind:videoError="onVideoError"
+    bind:trackerError="onTrackerError"
     style="width:{{width}}px;height:{{height}}px;"
   ></ar-scene>
 

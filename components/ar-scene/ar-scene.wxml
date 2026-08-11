@@ -1,7 +1,7 @@
 <!-- components/ar-scene/ar-scene.wxml -->
 <!-- 纯 xr-frame 原生 AR 场景：2D Marker 本地图像识别/追踪（不依赖 EasyAR）。
      markerImg 为页面从云数据库产品照片下载到本地的识别图；
-     识别到产品后由组件自动创建 SBS 透明视频平面并播放（跟随产品移动）。 -->
+     识别到产品后由组件自动加载并播放 SBS 透明视频（跟随产品移动）。 -->
 <xr-scene
   ar-system="modes:Marker"
   id="xr-scene"
@@ -16,6 +16,7 @@
       src="{{markerImg}}"
       id="arTracker"
       bind:ar-tracker-switch="handleTrackerSwitch"
+      bind:ar-tracker-state="handleTrackerState"
     ></xr-ar-tracker>
     <xr-camera
       id="camera"

@@ -11,7 +11,7 @@ App({
     }
   },
   globalData: {
-    // 首页模式：'all' 显示数据库全部产品（默认）；'collection' 只显示扫码收藏的产品
-    homeMode: 'all',
+    // 首页模式：'collection' 只显示用户扫码收藏的产品（新用户首页为空，扫码后才添加）
+    homeMode: 'collection',
   }
 });

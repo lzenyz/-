@@ -2,13 +2,15 @@
 // 纯 xr-frame 原生 AR 场景组件（已彻底移除 EasyAR 插件）：
 //   1. 页面把「云数据库里的产品照片」下载到本地后通过 markerImg 传入，作为 2D Marker 识别图；
 //   2. xr-frame 在本地完成图像识别与追踪，无需云识别、无需配置域名、无 apiKey/token；
-//   3. 识别到产品后自动播放 SBS 透明视频（视频纹理自带音频，无额外播放器、无双音冲突），
+//   3. 识别到产品后再加载并播放 SBS 透明视频（视频纹理自带音频，无额外播放器、无双音冲突），
+//      与之前双端（安卓/iOS）可用的时序保持一致：先识别、后播视频，避免 iOS 上
+//      过早加载视频与相机初始化抢资源导致卡顿/播不出。
 //      视频平面放在世界坐标（Marker 模式下识别点中心即世界原点，1 单位 = 识别物大小），
 //      因此视频会跟随产品移动，且 posX/posY/posZ 与数据库语义完全一致。
 Component({
   properties: {
     markerImg: { type: String, value: '' }, // 本地识别图路径
-    videoUrl: { type: String, value: '' },  // 视频临时链接
+    videoUrl: { type: String, value: '' },  // 视频临时链接（识别到后才真正加载）
     planeWidth: { type: Number, value: 1 },
     planeHeight: { type: Number, value: 1 },
     posX: { type: Number, value: 0 },
@@ -16,15 +18,6 @@ Component({
     posZ: { type: Number, value: 0 },
     width: { type: Number, value: 0 },
     height: { type: Number, value: 0 },
-  },
-
-  observers: {
-    // 视频地址就绪后立刻预加载视频纹理（尽早缓冲，识别到即可秒播，提升速度）
-    videoUrl(url) {
-      if (url && this.scene) {
-        this._preloadVideo(url);
-      }
-    },
   },
 
   data: {
@@ -36,8 +29,8 @@ Component({
   _effectsRegistered: false, // Effect/Material 是否已注册（防重复）
   _videoAsset: null,          // 当前视频纹理资源
   _videoAssetId: '',          // 视频纹理 assetId（uniform 用 video- 前缀引用）
-  _videoPreloading: false,
-  _videoPreloaded: false,
+  _videoLoading: false,
+  _videoLoaded: false,
   _videoRetry: 0,
   _meshCreated: false,        // 视频平面是否已创建
   _tracked: false,            // 当前是否识别到 marker
@@ -78,11 +71,6 @@ Component({
       if (this._effectsRegistered) return;
       this._effectsRegistered = true;
       this._registerSbsEffect();
-
-      // 若视频地址已就绪，立即开始预加载
-      if (this.properties.videoUrl) {
-        this._preloadVideo(this.properties.videoUrl);
-      }
     },
 
     /** AR 系统准备就绪（相机已启动、跟踪器已初始化） */
@@ -90,10 +78,6 @@ Component({
       this.setData({ arReady: true });
       console.log('✅ AR 系统已就绪');
       this.triggerEvent('arReady', {});
-
-      if (this.properties.videoUrl) {
-        this._preloadVideo(this.properties.videoUrl);
-      }
 
       // 部分机型在 ar-ready 之前就已识别到 marker，这里检查初始状态
       // EARTrackerState: Init=0, Detecting=1, Detected=2, Error=3
@@ -103,6 +87,9 @@ Component({
         if (tracker && tracker.state === 2) {
           console.log('🎯 AR 就绪时 marker 已处于识别状态');
           this._onTracked();
+        } else if (tracker && tracker.state === 3) {
+          console.error('❌ 识别图加载失败:', tracker.errorMessage);
+          this.triggerEvent('trackerError', { message: tracker.errorMessage || '识别图加载失败' });
         }
       } catch (e) {
         console.warn('检查 tracker 初始状态失败(可忽略):', e);
@@ -120,25 +107,35 @@ Component({
       }
     },
 
-    /** 识别到产品：通知页面并自动播放视频 */
-    _onTracked() {
-      if (this._tracked) return;
-      this._tracked = true;
-      console.log('🎯 识别到产品，自动播放视频');
-      this.triggerEvent('track', {});
-
-      if (this._videoPreloaded) {
-        this._showVideo();
-      } else if (this.properties.videoUrl) {
-        this._preloadVideo(this.properties.videoUrl);
+    /** 追踪器状态（诊断用）：识别图加载出错时上报 */
+    handleTrackerState(e) {
+      const tracker = e && e.detail && e.detail.value;
+      if (!tracker) return;
+      if (tracker.state === 3) {
+        console.error('❌ 识别图加载失败:', tracker.errorMessage);
+        this.triggerEvent('trackerError', { message: tracker.errorMessage || '识别图加载失败' });
       }
     },
 
-    /** 预加载视频纹理（含失败重试） */
-    async _preloadVideo(url) {
-      if (this._videoPreloading || this._videoPreloaded) return;
+    /** 识别到产品：通知页面并加载/播放视频 */
+    _onTracked() {
+      if (this._tracked) return;
+      this._tracked = true;
+      console.log('🎯 识别到产品，加载并播放视频');
+      this.triggerEvent('track', {});
+
+      if (this._videoLoaded) {
+        this._showVideo();
+      } else if (this.properties.videoUrl) {
+        this._loadVideo(this.properties.videoUrl);
+      }
+    },
+
+    /** 识别到后加载视频纹理（含失败重试），加载完成立即创建平面播放 */
+    async _loadVideo(url) {
+      if (this._videoLoading || this._videoLoaded) return;
       if (!this.scene || !url) return;
-      this._videoPreloading = true;
+      this._videoLoading = true;
 
       const assetId = 'video_' + Date.now() + '_' + this._videoRetry;
       try {
@@ -151,21 +148,21 @@ Component({
         });
         this._videoAsset = res.value;
         this._videoAssetId = assetId;
-        this._videoPreloaded = true;
-        this._videoPreloading = false;
-        console.log('✅ 视频资源已预加载, 宽高:', this._videoAsset.width, 'x', this._videoAsset.height);
+        this._videoLoaded = true;
+        this._videoLoading = false;
+        console.log('✅ 视频资源加载完成, 宽高:', this._videoAsset.width, 'x', this._videoAsset.height);
 
-        // 视频加载完成时若已识别到 marker，立即创建平面并播放
+        // 加载完成时若仍处于识别状态，立即创建平面并播放
         if (this._tracked) {
           this._showVideo();
         }
       } catch (err) {
-        this._videoPreloading = false;
+        this._videoLoading = false;
         this._videoRetry += 1;
         const msg = (err && (err.errMsg || err.message)) || String(err);
         if (this._videoRetry <= 2) {
           console.warn('⚠️ 视频加载失败，准备重试:', msg);
-          setTimeout(() => this._preloadVideo(url), 1200);
+          setTimeout(() => this._loadVideo(url), 1200);
           return;
         }
         console.error('❌ 视频资源加载失败:', msg);

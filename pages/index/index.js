@@ -41,7 +41,7 @@ Page({
    * 首页模式：'all' 展示数据库全部产品（默认）；'collection' 只显示扫码收藏的产品
    */
   _homeMode() {
-    return (getApp().globalData && getApp().globalData.homeMode) || 'all';
+    return (getApp().globalData && getApp().globalData.homeMode) || 'collection';
   },
 
   /**
@@ -56,14 +56,55 @@ Page({
   },
 
   /**
-   * 收藏模式：只渲染用户扫码收藏的产品（本地缓存 myStickers）
+   * 收藏模式：只渲染用户扫码收藏的产品（本地缓存 myStickers）。
+   * 每次先与数据库做一次「数据校准」：用数据库里该产品的实时 coverUrl 回填缓存，
+   * 修复旧版本遗留的「coverUrl 为空/失效」导致安卓端图片不显示的问题。
    */
   async _loadCollected() {
-    const list = wx.getStorageSync('myStickers') || [];
+    const cache = wx.getStorageSync('myStickers') || [];
+    console.log('📋 本地收藏缓存:', cache);
+    if (!cache.length) {
+      this.setData({ stickerList: [], isEmpty: true });
+      return;
+    }
+
+    const cacheMap = {};
+    cache.forEach(item => { if (item.targetId) cacheMap[item.targetId] = item; });
+
+    // 从数据库刷新收藏产品的实时数据（coverUrl 以数据库为准）
+    let list = cache;
+    try {
+      const res = await wx.cloud.callFunction({
+        name: 'quickstartFunctions',
+        data: { action: 'getAllStickers' },
+      });
+      const result = res.result || {};
+      if (result.code === 0) {
+        const all = result.data || [];
+        list = all
+          .filter(item => cacheMap[item.targetId])
+          .map(item => ({
+            _id: item._id,
+            targetId: item.targetId,
+            title: item.title || cacheMap[item.targetId].title || '未命名冰箱贴',
+            videoUrl: item.videoUrl || cacheMap[item.targetId].videoUrl || '',
+            coverUrl: item.coverUrl || cacheMap[item.targetId].coverUrl || '',
+          }));
+        if (list.length) {
+          // 写回修复后的缓存
+          wx.setStorageSync('myStickers', list);
+          console.log('🔄 收藏数据已与数据库校准:', list.map(i => i.targetId));
+        }
+      }
+    } catch (err) {
+      console.error('刷新收藏数据失败，使用本地缓存', err);
+      list = cache;
+    }
+
     const processedList = await this._resolveCovers(list);
     this.setData({
       stickerList: processedList,
-      isEmpty: processedList.length === 0
+      isEmpty: processedList.length === 0,
     });
   },
 
@@ -94,63 +135,84 @@ Page({
   },
 
   /**
-   * 把列表中的 cloud:// 封面转换为临时 HTTPS 链接供 image 显示；非 cloud:// 原样保留
+   * 把封面解析成可显示路径。
+   * 云存储文件（cloud://）优先「下载到本地文件」再显示——安卓/iOS 通用、免域名、
+   * 不受临时链接域名校验影响（与 AR 页识别图下载机制一致，双端已验证）。
+   * 下载失败才回退临时 HTTPS 链接；本次会话内存缓存，避免重复返回首页反复下载。
    */
   async _resolveCovers(list) {
     if (!list || list.length === 0) return [];
+    const localCache = this._coverLocalMap || (this._coverLocalMap = {});
 
-    const cloudFileIds = list
-      .map(item => item.coverUrl)
-      .filter(url => url && typeof url === 'string' && url.startsWith('cloud://'));
+    const resolved = await Promise.all(list.map(async (item) => {
+      const raw = (item.coverUrl && typeof item.coverUrl === 'string') ? item.coverUrl : '';
+      if (!raw) {
+        console.warn('⚠️ 该产品未配置封面图(coverUrl 为空):', item.targetId);
+        return { ...item, coverUrl: '', cloudFileId: '' };
+      }
 
-    let tempUrlMap = {};
-    if (cloudFileIds.length > 0) {
-      try {
-        const uniqueIds = [...new Set(cloudFileIds)];
-        const cached = this.data.tempUrlCache || {};
-        const needConvert = uniqueIds.filter(id => !cached[id]);
-        let converted = {};
-        if (needConvert.length > 0) {
-          const result = await wx.cloud.getTempFileURL({ fileList: needConvert });
-          if (result.fileList) {
-            result.fileList.forEach(item => {
-              if (item.tempFileURL) {
-                converted[item.fileID] = item.tempFileURL;
-              }
-            });
+      if (raw.startsWith('cloud://')) {
+        // 1) 会话内已下载过，直接复用本地文件
+        if (localCache[raw]) {
+          return { ...item, coverUrl: localCache[raw], cloudFileId: raw };
+        }
+        // 2) 下载到本地（downloadFile 是云 SDK 接口，无需配置任何域名）
+        try {
+          const res = await wx.cloud.downloadFile({ fileID: raw });
+          localCache[raw] = res.tempFilePath;
+          return { ...item, coverUrl: res.tempFilePath, cloudFileId: raw };
+        } catch (err) {
+          console.warn('⚠️ 下载封面失败，回退临时链接:', err);
+          // 3) 回退临时 HTTPS 链接（iOS 通常可显示）
+          try {
+            const tRes = await wx.cloud.getTempFileURL({ fileList: [raw] });
+            const url = tRes.fileList && tRes.fileList[0] && tRes.fileList[0].tempFileURL;
+            return { ...item, coverUrl: url || '', cloudFileId: raw };
+          } catch (e3) {
+            return { ...item, coverUrl: raw, cloudFileId: raw };
           }
         }
-        tempUrlMap = { ...cached, ...converted };
-        this.data.tempUrlCache = tempUrlMap;
-      } catch (e) {
-        console.error('获取临时链接失败', e);
       }
-    }
 
-    return list.map(item => {
-      let coverUrl = item.coverUrl;
-      if (coverUrl && coverUrl.startsWith('cloud://') && tempUrlMap[coverUrl]) {
-        coverUrl = tempUrlMap[coverUrl];
-      }
-      return {
-        ...item,
-        coverUrl: coverUrl || '' // 若无封面则置空，触发 fallback
-      };
-    });
+      // 非 cloud://（外部 https 等）：原样保留
+      return { ...item, coverUrl: raw, cloudFileId: '' };
+    }));
+
+    return resolved;
   },
 
   /**
-   * 图片加载失败时的降级处理（将错误链接置空，显示备用图标）
+   * 图片加载失败时的兜底处理（正常情况下封面已是本地文件，不会走到这里）：
+   *   1) 有 cloud:// 来源且未兜底过 -> 再尝试下载到本地一次；
+   *   2) 仍失败或没有来源 -> 置空显示备用图标。
    */
   onImageError(e) {
     const index = e.currentTarget.dataset.index;
     const list = this.data.stickerList;
     const failed = list[index];
-    if (failed) {
-      console.warn('⚠️ 图片加载失败(可能是域名未配置或文件不存在):', failed.coverUrl);
-      failed.coverUrl = '';
-      this.setData({ stickerList: list });
+    if (!failed) return;
+
+    if (failed.cloudFileId && !failed._coverFallbackDone) {
+      failed._coverFallbackDone = true;
+      console.warn('⚠️ 图片加载失败，尝试下载云文件到本地:', failed.cloudFileId);
+      wx.cloud.downloadFile({
+        fileID: failed.cloudFileId,
+        success: (res) => {
+          failed.coverUrl = res.tempFilePath;
+          this.setData({ stickerList: list });
+        },
+        fail: (err) => {
+          console.error('下载封面失败:', err);
+          failed.coverUrl = '';
+          this.setData({ stickerList: list });
+        },
+      });
+      return;
     }
+
+    console.warn('⚠️ 图片加载失败(可能是文件不存在):', failed.coverUrl);
+    failed.coverUrl = '';
+    this.setData({ stickerList: list });
   },
 
 
@@ -181,19 +243,45 @@ Page({
   },
 
   /**
-   * 从二维码原文中解析 targetId
+   * 从二维码原文中解析 targetId。
+   * 兼容多种形态：
+   *   1) pages/ar/ar?targetId=UUID
+   *   2) pages/ar/ar?scene=32位hex（小程序码 scene）
+   *   3) 完整 UUID：50ad7636-934f-4522-b831-c577dec0564c
+   *   4) 去掉横杠的 32 位 hex（自动还原为 UUID）
+   *   5) 自定义短码（原样返回）
    */
   _extractTargetId(str) {
     if (!str) return '';
-    const text = String(str).trim();
-    const m = text.match(/[?&]targetId=([^&#]+)/);
+    let text = String(str).trim();
+
+    // 1) 取 ?targetId= 或 ?scene= 的值
+    const m = text.match(/[?&](?:targetId|scene)=([^&#]+)/);
     if (m) {
       try {
-        return decodeURIComponent(m[1]);
+        text = decodeURIComponent(m[1]);
       } catch (e) {
-        return m[1];
+        text = m[1];
+      }
+    } else {
+      // 2) 纯 scene 字符串（微信扫一扫某些情况下直接返回 scene 值）
+      const sceneMatch = text.match(/^scene=([^&#]+)$/);
+      if (sceneMatch) {
+        try {
+          text = decodeURIComponent(sceneMatch[1]);
+        } catch (e) {
+          text = sceneMatch[1];
+        }
       }
     }
+
+    // 3) 32 位 hex（去掉横杠的 UUID）自动还原为带横杠的 UUID
+    const u = text.match(/^([0-9a-fA-F]{8})([0-9a-fA-F]{4})([0-9a-fA-F]{4})([0-9a-fA-F]{4})([0-9a-fA-F]{12})$/);
+    if (u) {
+      return `${u[1]}-${u[2]}-${u[3]}-${u[4]}-${u[5]}`;
+    }
+
+    // 4) 完整 UUID 或自定义短码，原样返回
     if (/^[A-Za-z0-9][A-Za-z0-9\-_.~]{1,64}$/.test(text)) {
       return text;
     }
