@@ -10,19 +10,11 @@
     "navigationBarTitleText": "AR冰箱贴",
     "navigationBarTextStyle": "black"
   },
-  "plugins": {
-    "easyar": {
-      "version": "2.0.3",
-      "provider": "wx27fa3b52b5462e8f"
-    }
-  },
-
   "permission": {
     "scope.camera": {
       "desc": "用于AR识别冰箱贴"
     }
   },
-
   "requiredPrivateInfos": [],
   "style": "v2",
   "sitemapLocation": "sitemap.json"

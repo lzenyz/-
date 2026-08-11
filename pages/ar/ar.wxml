@@ -1,18 +1,23 @@
 <!-- pages/ar/ar.wxml -->
 <!-- bind:touchstart：iOS 首次触摸用于唤醒视频音频（无感、无需额外按钮） -->
 <view class="ar-container" bind:touchstart="onTouchStart">
-  <easyar-ar
-    id="easyar-ar"
-    runingCrs="{{runingCrs}}"
-    tracking="{{tracking}}"
-    config="{{config}}"
+  <!-- 纯 xr-frame 原生 AR 场景组件（识别图 = 云数据库产品照片，识别到自动播放 SBS 透明视频） -->
+  <ar-scene
+    id="ar-scene"
+    marker-img="{{markerImg}}"
+    video-url="{{videoUrl}}"
+    plane-width="{{planeWidth}}"
+    plane-height="{{planeHeight}}"
+    pos-x="{{posX}}"
+    pos-y="{{posY}}"
+    pos-z="{{posZ}}"
     width="{{width * dpi}}"
     height="{{height * dpi}}"
-    bind:searchSuccess="onSearchSuccess"
     bind:arReady="onARReady"
+    bind:track="onTrack"
+    bind:videoError="onVideoError"
     style="width:{{width}}px;height:{{height}}px;"
-  >
-  </easyar-ar>
+  ></ar-scene>
 
   <!-- UI 覆盖层 -->
   <view class="ui-overlay">
@@ -31,7 +36,7 @@
         <view class="corner bl"></view>
         <view class="corner br"></view>
       </view>
-      <text class="scan-text">请将冰箱贴放入识别框内</text>
+      <text class="scan-text">请将产品放入识别框内</text>
     </view>
 
     <!-- 返回按钮 -->
