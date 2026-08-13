@@ -4,6 +4,12 @@
 //       -> 把 coverUrl（云存储照片，与首页同一张）下载到本地作为 2D Marker 识别图
 //       -> xr-frame 本地识别/追踪 -> 识别到后自动播放 SBS 透明视频（带音频，跟随产品）。
 // 全程只依赖微信云开发：无 EasyAR 域名、无 apiKey/token。
+//
+// 性能优化（本轮）：
+//   1. 识别图持久本地缓存（cover_<targetId>.jpg + sidecar），二次进入免下载、秒开；
+//   2. 识别图下载 与 视频链接转换 并行执行；
+//   3. 拿到产品数据后【尽早】写入首页收藏缓存，消除"退出时首页未渲染"的竞态；
+//   4. iOS/鸿蒙(HarmonyOS) 识别图压缩一次，避免部分机型跟踪图无法加载。
 Page({
   data: {
     isInitializing: true,
@@ -12,6 +18,8 @@ Page({
     isError: false,
     markerImg: '',     // 本地识别图路径（传给 ar-scene）
     videoUrl: '',      // 视频临时链接（传给 ar-scene）
+    // true=相机就绪后预加载视频（更流畅，默认）；false=识别到后再加载（兼容兜底）
+    preloadVideoOnReady: true,
     planeWidth: 1,
     planeHeight: 1,
     posX: 0,
@@ -22,11 +30,11 @@ Page({
     dpi: 1,
   },
 
-  // ⭐ 期望识别的 targetId
+  // 期望识别的 targetId
   expectedTargetId: null,
 
   onLoad(options) {
-    // ⭐ 兼容两种进入方式：
+    // 兼容两种进入方式：
     // 1) 首页跳转：options.targetId（或带地址的形式）
     // 2) 微信扫一扫打开「小程序码」：options.scene = 去掉横杠的 targetId（32位十六进制）
     let targetId = this._normalizeTargetId(options && options.targetId);
@@ -44,13 +52,13 @@ Page({
     // 先检查相机权限：拒绝后引导去设置开启（与原版行为一致）
     this.checkCameraAuth().then((ok) => {
       if (!ok) {
-        console.warn('🚫 相机权限未授权');
+        console.warn('相机权限未授权');
         this.setData({ isError: true, isInitializing: false });
         return;
       }
 
       if (!targetId) {
-        console.warn('⚠️ 未传入 targetId');
+        console.warn('未传入 targetId');
         this.setData({ isError: true, isInitializing: false });
         wx.showModal({
           title: '提示',
@@ -61,10 +69,7 @@ Page({
       }
 
       this.expectedTargetId = targetId;
-      console.log('🎯 期望识别的 targetId:', targetId);
-
-      // 从小程序码/直链进入时，把产品写入首页收藏缓存（返回首页即可看到并切换）
-      this.ensureInCollection(targetId);
+      console.log('期望识别的 targetId:', targetId);
       this._initSticker(targetId);
     });
   },
@@ -128,7 +133,8 @@ Page({
   },
 
   /**
-   * 加载产品数据：取识别图、视频与位置，准备本地 marker 后交给 ar-scene
+   * 加载产品数据：取识别图、视频与位置，准备本地 marker 后交给 ar-scene。
+   * 优化：尽早写入收藏缓存 + 识别图/视频链接并行处理。
    */
   async _initSticker(targetId) {
     try {
@@ -139,7 +145,7 @@ Page({
       });
       wx.hideLoading();
 
-      console.log('📦 云函数返回结果:', result);
+      console.log('云函数返回结果:', result);
       const r = result.result || {};
       if (r.code !== 0 || !r.data) {
         throw new Error(r.message || '未找到对应的产品数据');
@@ -149,21 +155,14 @@ Page({
       if (!coverUrl) throw new Error('该产品未配置识别图（coverUrl）');
       if (!videoUrl) throw new Error('该产品未配置视频（videoUrl）');
 
-      // 1) 把云存储里的产品照片下载到本地，作为 2D Marker 识别图（与首页同一张）
-      const markerImg = await this._prepareMarker(coverUrl, targetId);
+      // 1) 尽早写入首页收藏缓存（返回首页即可看到；消除退出时缓存未写入的竞态）
+      this._saveToCollection(r.data);
 
-      // 2) 视频链接：cloud:// 转临时 HTTPS
-      let finalVideoUrl = videoUrl;
-      if (videoUrl && videoUrl.startsWith('cloud://')) {
-        console.log('🔄 转换 cloud:// 视频链接为临时 HTTPS...');
-        const res = await wx.cloud.getTempFileURL({ fileList: [videoUrl] });
-        if (res.fileList && res.fileList.length > 0 && res.fileList[0].tempFileURL) {
-          finalVideoUrl = res.fileList[0].tempFileURL;
-          console.log('✅ 转换后视频链接:', finalVideoUrl);
-        } else {
-          throw new Error('获取视频临时链接失败');
-        }
-      }
+      // 2) 并行：识别图（含持久缓存）下载 + 视频链接转换
+      const [markerImg, finalVideoUrl] = await Promise.all([
+        this._prepareMarker(coverUrl, targetId),
+        this._resolveVideoUrl(videoUrl),
+      ]);
 
       this.setData({
         markerImg: markerImg,
@@ -176,9 +175,9 @@ Page({
         isInitializing: false,
         initStatus: '请将产品对准摄像头',
       });
-      console.log('✅ 产品数据就绪, 识别图:', markerImg);
+      console.log('产品数据就绪, 识别图:', markerImg);
     } catch (error) {
-      console.error('❌ 初始化失败:', error);
+      console.error('初始化失败:', error);
       wx.hideLoading();
       this.setData({ isError: true, isInitializing: false });
       wx.showModal({
@@ -192,56 +191,101 @@ Page({
   },
 
   /**
-   * 把识别图（云存储照片）下载到本地，iOS 压缩一次，返回可用的本地路径
+   * 把产品写入首页收藏缓存（myStickers），已存在则跳过
    */
-  _prepareMarker(coverUrl, targetId) {
+  _saveToCollection(sticker) {
+    if (!sticker || !sticker.targetId) return;
+    const list = wx.getStorageSync('myStickers') || [];
+    if (list.some(item => item.targetId === sticker.targetId)) return;
+    list.push({
+      _id: sticker._id,
+      targetId: sticker.targetId,
+      title: sticker.title || '未命名冰箱贴',
+      videoUrl: sticker.videoUrl || '',
+      coverUrl: sticker.coverUrl || '',
+    });
+    wx.setStorageSync('myStickers', list);
+    console.log('已加入首页收藏缓存:', sticker.targetId);
+  },
+
+  /**
+   * 把识别图（云存储照片）下载到本地，并做持久缓存。
+   * 缓存文件：USER_DATA_PATH/cover_<targetId>.jpg + cover_<targetId>.json(sidecar 记录 fileID)
+   * - 命中缓存且 fileID 未变 -> 直接复用，跳过网络下载（二次进入秒开）；
+   * - iOS/鸿蒙压缩一次生成临时文件，避免部分机型跟踪图无法加载；压缩失败降级原路径。
+   */
+  async _prepareMarker(coverUrl, targetId) {
     const fs = wx.getFileSystemManager();
-    const localPath = `${wx.env.USER_DATA_PATH}/marker_${targetId}.jpg`;
+    const sys = wx.getSystemInfoSync();
+    const localPath = `${wx.env.USER_DATA_PATH}/cover_${targetId}.jpg`;
+    const sidecarPath = `${wx.env.USER_DATA_PATH}/cover_${targetId}.json`;
+    // iOS 或 鸿蒙(HarmonyOS)：压缩一次更稳
+    const needCompress = sys.platform === 'ios' || /HarmonyOS|Harmony/i.test(sys.system || '');
 
-    const download = () => {
-      if (coverUrl.startsWith('cloud://')) {
-        // 云开发文件：无需配置合法域名
-        return wx.cloud.downloadFile({ fileID: coverUrl }).then(res => res.tempFilePath);
+    let srcPath = '';
+    // 1) 命中持久缓存：本地文件存在且 fileID 一致
+    try {
+      const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+      fs.accessSync(localPath);
+      if (sidecar && sidecar.fileID === coverUrl) {
+        srcPath = localPath;
       }
-      // 普通 https 图片：走 wx.downloadFile（需在后台配置 downloadFile 合法域名）
-      return new Promise((resolve, reject) => {
-        wx.downloadFile({ url: coverUrl, success: res => resolve(res.tempFilePath), fail: reject });
-      });
-    };
+    } catch (e) { /* 未命中 */ }
 
-    return download()
-      .then(tempFilePath => {
-        // 复制到 USER_DATA_PATH 稳定路径（Android 与 iOS 均可被 xr-frame 使用）
+    // 2) 未命中：下载并持久化
+    if (!srcPath) {
+      try {
+        const tempFilePath = coverUrl.startsWith('cloud://')
+          ? (await wx.cloud.downloadFile({ fileID: coverUrl })).tempFilePath
+          : await new Promise((resolve, reject) => {
+            wx.downloadFile({ url: coverUrl, success: res => resolve(res.tempFilePath), fail: reject });
+          });
         try {
           fs.copyFileSync(tempFilePath, localPath);
-          return localPath;
+          fs.writeFileSync(sidecarPath, JSON.stringify({ fileID: coverUrl, t: Date.now() }), 'utf8');
+          srcPath = localPath;
         } catch (e) {
-          console.warn('复制识别图失败，直接使用临时路径:', e);
-          return tempFilePath;
+          // 持久化失败不阻塞，直接用临时路径
+          srcPath = tempFilePath;
         }
-      })
-      .catch(err => {
-        // 下载失败时降级：若原本就是网络链接，直接交给 tracker 尝试
-        console.warn('⚠️ 下载识别图失败，尝试直接使用原链接:', err);
-        return coverUrl;
-      })
-      .then(path => {
-        if (wx.getSystemInfoSync().platform === 'ios' && !/^https?:/.test(path)) {
-          // iOS 平台压缩一次，避免部分机型跟踪图无法加载；压缩失败降级使用原路径
-          return new Promise(resolve => {
-            wx.compressImage({
-              src: path,
-              quality: 90,
-              success: res => resolve(res.tempFilePath),
-              fail: () => {
-                console.warn('⚠️ iOS 压缩识别图失败，降级使用原路径');
-                resolve(path);
-              },
-            });
-          });
-        }
-        return path;
+      } catch (err) {
+        console.warn('下载识别图失败，尝试直接使用原链接:', err);
+        srcPath = coverUrl;
+      }
+    }
+
+    // 3) iOS/鸿蒙：压缩一次生成临时文件；失败降级原路径
+    if (needCompress && srcPath && !/^https?:/.test(srcPath)) {
+      return new Promise((resolve) => {
+        wx.compressImage({
+          src: srcPath,
+          quality: 90,
+          success: res => resolve(res.tempFilePath),
+          fail: () => {
+            console.warn('压缩识别图失败，降级使用原路径');
+            resolve(srcPath);
+          },
+        });
       });
+    }
+    return srcPath;
+  },
+
+  /**
+   * 视频链接：cloud:// 转临时 HTTPS；已是 https 原样返回
+   */
+  async _resolveVideoUrl(videoUrl) {
+    if (videoUrl && videoUrl.startsWith('cloud://')) {
+      console.log('转换 cloud:// 视频链接为临时 HTTPS...');
+      const res = await wx.cloud.getTempFileURL({ fileList: [videoUrl] });
+      if (res.fileList && res.fileList.length > 0 && res.fileList[0].tempFileURL) {
+        const url = res.fileList[0].tempFileURL;
+        console.log('转换后视频链接:', url);
+        return url;
+      }
+      throw new Error('获取视频临时链接失败');
+    }
+    return videoUrl;
   },
 
   /**
@@ -276,46 +320,16 @@ Page({
     return hex; // 非 UUID 形态的短码原样返回
   },
 
-  /**
-   * 把产品写入首页收藏缓存（myStickers），返回首页即可看到并切换
-   */
-  ensureInCollection(targetId) {
-    const list = wx.getStorageSync('myStickers') || [];
-    if (list.some(item => item.targetId === targetId)) return;
-    wx.cloud.callFunction({
-      name: 'quickstartFunctions',
-      data: { action: 'getStickerDataByTargetId', targetId: targetId },
-      success: (res) => {
-        const r = res.result || {};
-        if (r.code === 0 && r.data) {
-          const list2 = wx.getStorageSync('myStickers') || [];
-          if (!list2.some(item => item.targetId === targetId)) {
-            list2.push({
-              _id: r.data._id,
-              targetId: targetId,
-              title: r.data.title || '未命名冰箱贴',
-              videoUrl: r.data.videoUrl,
-              coverUrl: r.data.coverUrl || '',
-            });
-            wx.setStorageSync('myStickers', list2);
-            console.log('📥 已加入首页收藏缓存:', targetId);
-          }
-        }
-      },
-      fail: (err) => console.warn('缓存收藏失败', err),
-    });
-  },
-
   /** AR 场景/相机就绪 */
   onARReady() {
-    console.log('🎯 AR 已就绪，开始识别');
+    console.log('AR 已就绪，开始识别');
     this.setData({ initStatus: '请将产品对准摄像头' });
   },
 
   /** 识别到产品（组件自动播放视频） */
   onTrack() {
     if (this.data.isRecognized) return;
-    console.log('🎯 识别到产品，自动播放视频');
+    console.log('识别到产品，自动播放视频');
     wx.vibrateShort({ type: 'light' });
     this.setData({ isRecognized: true, isInitializing: false });
   },
@@ -323,14 +337,14 @@ Page({
   /** 视频加载失败 */
   onVideoError(e) {
     const msg = (e && e.detail && e.detail.message) || '视频加载失败';
-    console.error('❌ 视频错误:', msg);
+    console.error('视频错误:', msg);
     wx.showToast({ icon: 'none', title: '视频加载失败，请重试' });
   },
 
   /** 识别图加载失败（诊断用） */
   onTrackerError(e) {
     const msg = (e && e.detail && e.detail.message) || '识别图加载失败';
-    console.error('❌ 识别图错误:', msg);
+    console.error('识别图错误:', msg);
     wx.showToast({ icon: 'none', title: '识别图加载失败' });
   },
 

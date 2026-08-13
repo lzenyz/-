@@ -6,6 +6,7 @@
     id="ar-scene"
     marker-img="{{markerImg}}"
     video-url="{{videoUrl}}"
+    preload-video-on-ready="{{preloadVideoOnReady}}"
     plane-width="{{planeWidth}}"
     plane-height="{{planeHeight}}"
     pos-x="{{posX}}"

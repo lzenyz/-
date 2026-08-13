@@ -1,4 +1,9 @@
 // pages/index/index.js
+// 首页：收藏模式（只展示用户扫码收藏的产品）。
+// 性能优化（本轮）：
+//   1. 先渲染本地缓存，再后台异步与数据库校准（云函数慢/失败也能立刻显示，不再"没渲染"）；
+//   2. 封面持久本地缓存 cover_<targetId>.jpg（与 AR 页识别图共用同一文件，扫码后首页可直接复用）；
+//   3. 封面加载失败时：先降级临时链接 -> cloud://，最终兜底占位图标。
 Page({
   data: {
     stickerList: [],
@@ -8,7 +13,6 @@ Page({
     emptySub: '商家还没有上架产品',
     statusBarHeight: 20,
     navBarHeight: 44,
-    tempUrlCache: {} // 缓存已转换的临时链接，避免重复请求
   },
 
   onLoad() {
@@ -57,22 +61,24 @@ Page({
 
   /**
    * 收藏模式：只渲染用户扫码收藏的产品（本地缓存 myStickers）。
-   * 每次先与数据库做一次「数据校准」：用数据库里该产品的实时 coverUrl 回填缓存，
-   * 修复旧版本遗留的「coverUrl 为空/失效」导致安卓端图片不显示的问题。
+   * 策略：先用本地缓存立即渲染（封面走持久本地缓存，秒出），
+   * 再在后台用数据库实时数据校准刷新，避免云函数慢导致首页"没渲染"。
    */
   async _loadCollected() {
     const cache = wx.getStorageSync('myStickers') || [];
-    console.log('📋 本地收藏缓存:', cache);
     if (!cache.length) {
       this.setData({ stickerList: [], isEmpty: true });
       return;
     }
 
-    const cacheMap = {};
-    cache.forEach(item => { if (item.targetId) cacheMap[item.targetId] = item; });
+    // 1) 立即渲染本地缓存
+    const processedList = await this._resolveCovers(cache);
+    this.setData({
+      stickerList: processedList,
+      isEmpty: processedList.length === 0,
+    });
 
-    // 从数据库刷新收藏产品的实时数据（coverUrl 以数据库为准）
-    let list = cache;
+    // 2) 后台异步校准：用数据库里该产品的实时 coverUrl/title 回填缓存并刷新
     try {
       const res = await wx.cloud.callFunction({
         name: 'quickstartFunctions',
@@ -81,7 +87,9 @@ Page({
       const result = res.result || {};
       if (result.code === 0) {
         const all = result.data || [];
-        list = all
+        const cacheMap = {};
+        cache.forEach(item => { if (item.targetId) cacheMap[item.targetId] = item; });
+        const merged = all
           .filter(item => cacheMap[item.targetId])
           .map(item => ({
             _id: item._id,
@@ -90,22 +98,19 @@ Page({
             videoUrl: item.videoUrl || cacheMap[item.targetId].videoUrl || '',
             coverUrl: item.coverUrl || cacheMap[item.targetId].coverUrl || '',
           }));
-        if (list.length) {
-          // 写回修复后的缓存
-          wx.setStorageSync('myStickers', list);
-          console.log('🔄 收藏数据已与数据库校准:', list.map(i => i.targetId));
+        if (merged.length) {
+          // 写回修复后的缓存（修复旧版本 coverUrl 为空/失效的问题）
+          wx.setStorageSync('myStickers', merged);
+          const processed2 = await this._resolveCovers(merged);
+          this.setData({
+            stickerList: processed2,
+            isEmpty: processed2.length === 0,
+          });
         }
       }
     } catch (err) {
-      console.error('刷新收藏数据失败，使用本地缓存', err);
-      list = cache;
+      console.error('收藏数据校准失败(可忽略):', err);
     }
-
-    const processedList = await this._resolveCovers(list);
-    this.setData({
-      stickerList: processedList,
-      isEmpty: processedList.length === 0,
-    });
   },
 
   /**
@@ -136,18 +141,21 @@ Page({
 
   /**
    * 把封面解析成可显示路径。
-   * 云存储文件（cloud://）优先「下载到本地文件」再显示——安卓/iOS 通用、免域名、
-   * 不受临时链接域名校验影响（与 AR 页识别图下载机制一致，双端已验证）。
-   * 下载失败才回退临时 HTTPS 链接；本次会话内存缓存，避免重复返回首页反复下载。
+   * cloud:// 文件优先「持久下载到本地」再显示——安卓/iOS/鸿蒙通用、免域名。
+   * 缓存文件：USER_DATA_PATH/cover_<targetId>.jpg + cover_<targetId>.json(sidecar 记录 fileID)
+   * - 与 AR 页识别图共用同一缓存文件，扫码后返回首页可直接复用，秒出；
+   * - 命中缓存且 fileID 未变 -> 直接复用本地文件；
+   * - 下载失败 -> 回退临时 HTTPS 链接 -> 再失败 cloud:// 原样（交给 image 兜底）。
    */
   async _resolveCovers(list) {
     if (!list || list.length === 0) return [];
+    const fs = wx.getFileSystemManager();
     const localCache = this._coverLocalMap || (this._coverLocalMap = {});
 
     const resolved = await Promise.all(list.map(async (item) => {
       const raw = (item.coverUrl && typeof item.coverUrl === 'string') ? item.coverUrl : '';
       if (!raw) {
-        console.warn('⚠️ 该产品未配置封面图(coverUrl 为空):', item.targetId);
+        console.warn('该产品未配置封面图(coverUrl 为空):', item.targetId);
         return { ...item, coverUrl: '', cloudFileId: '' };
       }
 
@@ -156,14 +164,35 @@ Page({
         if (localCache[raw]) {
           return { ...item, coverUrl: localCache[raw], cloudFileId: raw };
         }
-        // 2) 下载到本地（downloadFile 是云 SDK 接口，无需配置任何域名）
+
+        const localPath = `${wx.env.USER_DATA_PATH}/cover_${item.targetId}.jpg`;
+        const sidecarPath = `${wx.env.USER_DATA_PATH}/cover_${item.targetId}.json`;
+
+        // 2) 持久本地缓存命中（与 AR 页识别图共用文件）
+        try {
+          const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+          fs.accessSync(localPath);
+          if (sidecar && sidecar.fileID === raw) {
+            localCache[raw] = localPath;
+            return { ...item, coverUrl: localPath, cloudFileId: raw };
+          }
+        } catch (e) { /* 未命中 */ }
+
+        // 3) 下载并持久化
         try {
           const res = await wx.cloud.downloadFile({ fileID: raw });
-          localCache[raw] = res.tempFilePath;
-          return { ...item, coverUrl: res.tempFilePath, cloudFileId: raw };
+          try {
+            fs.copyFileSync(res.tempFilePath, localPath);
+            fs.writeFileSync(sidecarPath, JSON.stringify({ fileID: raw, t: Date.now() }), 'utf8');
+            localCache[raw] = localPath;
+            return { ...item, coverUrl: localPath, cloudFileId: raw };
+          } catch (e2) {
+            localCache[raw] = res.tempFilePath;
+            return { ...item, coverUrl: res.tempFilePath, cloudFileId: raw };
+          }
         } catch (err) {
-          console.warn('⚠️ 下载封面失败，回退临时链接:', err);
-          // 3) 回退临时 HTTPS 链接（iOS 通常可显示）
+          console.warn('下载封面失败，回退临时链接:', err);
+          // 4) 回退临时 HTTPS 链接（iOS 通常可显示）
           try {
             const tRes = await wx.cloud.getTempFileURL({ fileList: [raw] });
             const url = tRes.fileList && tRes.fileList[0] && tRes.fileList[0].tempFileURL;
@@ -194,7 +223,7 @@ Page({
 
     if (failed.cloudFileId && !failed._coverFallbackDone) {
       failed._coverFallbackDone = true;
-      console.warn('⚠️ 图片加载失败，尝试下载云文件到本地:', failed.cloudFileId);
+      console.warn('图片加载失败，尝试下载云文件到本地:', failed.cloudFileId);
       wx.cloud.downloadFile({
         fileID: failed.cloudFileId,
         success: (res) => {
@@ -210,7 +239,7 @@ Page({
       return;
     }
 
-    console.warn('⚠️ 图片加载失败(可能是文件不存在):', failed.coverUrl);
+    console.warn('图片加载失败(可能是文件不存在):', failed.coverUrl);
     failed.coverUrl = '';
     this.setData({ stickerList: list });
   },
@@ -233,7 +262,7 @@ Page({
           wx.showToast({ title: '二维码内容无效', icon: 'none' });
           return;
         }
-        console.log('🎯 扫码解析到 targetId:', targetId);
+        console.log('扫码解析到 targetId:', targetId);
         this.fetchStickerDataAndGoAR(targetId);
       },
       fail: (err) => {

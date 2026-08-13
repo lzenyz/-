@@ -2,15 +2,18 @@
 // 纯 xr-frame 原生 AR 场景组件（已彻底移除 EasyAR 插件）：
 //   1. 页面把「云数据库里的产品照片」下载到本地后通过 markerImg 传入，作为 2D Marker 识别图；
 //   2. xr-frame 在本地完成图像识别与追踪，无需云识别、无需配置域名、无 apiKey/token；
-//   3. 识别到产品后再加载并播放 SBS 透明视频（视频纹理自带音频，无额外播放器、无双音冲突），
-//      与之前双端（安卓/iOS）可用的时序保持一致：先识别、后播视频，避免 iOS 上
-//      过早加载视频与相机初始化抢资源导致卡顿/播不出。
-//      视频平面放在世界坐标（Marker 模式下识别点中心即世界原点，1 单位 = 识别物大小），
-//      因此视频会跟随产品移动，且 posX/posY/posZ 与数据库语义完全一致。
+//   3. 识别到产品后自动播放 SBS 透明视频（视频纹理自带音频，无额外播放器、无双音冲突）。
+//
+// 播放策略（本轮针对鸿蒙/流畅度优化）：
+//   - 视频统一使用 autoPlay:true（解码器加载即启动，避免鸿蒙等机型"卡首帧"）；
+//   - 鸿蒙(HarmonyOS) 机型：跳过预加载，采用最稳的"识别到后再加载播放"；
+//   - 安卓/iOS：相机就绪(ar-ready)后预加载（autoPlay 预热后暂停，识别到再续播），兼顾流畅；
+//   - 播放看门狗：识别后若 1.5s 仍未进入播放态，自动 seek(0)+play() 强制唤醒。
 Component({
   properties: {
     markerImg: { type: String, value: '' }, // 本地识别图路径
-    videoUrl: { type: String, value: '' },  // 视频临时链接（识别到后才真正加载）
+    videoUrl: { type: String, value: '' },  // 视频临时链接
+    preloadVideoOnReady: { type: Boolean, value: true }, // true=ar-ready 后预加载；false=识别后再加载
     planeWidth: { type: Number, value: 1 },
     planeHeight: { type: Number, value: 1 },
     posX: { type: Number, value: 0 },
@@ -18,6 +21,15 @@ Component({
     posZ: { type: Number, value: 0 },
     width: { type: Number, value: 0 },
     height: { type: Number, value: 0 },
+  },
+
+  observers: {
+    // videoUrl 就绪后（若已 ar-ready 且开启预加载）尝试预加载
+    videoUrl(url) {
+      if (url) {
+        this._maybePreload();
+      }
+    },
   },
 
   data: {
@@ -32,9 +44,11 @@ Component({
   _videoLoading: false,
   _videoLoaded: false,
   _videoRetry: 0,
+  _videoPausedByPreload: false, // 预加载后是否已暂停（识别时需续播）
   _meshCreated: false,        // 视频平面是否已创建
   _tracked: false,            // 当前是否识别到 marker
   _audioUnlocked: false,      // 音频是否已被触摸唤醒
+  _isHarmony: false,          // 是否鸿蒙系统
 
   lifetimes: {
     attached() {
@@ -46,6 +60,7 @@ Component({
           showCancel: false,
         });
       }
+      this._isHarmony = /HarmonyOS|Harmony/i.test((sys.system || '') + ' ' + (sys.model || ''));
       this.setData({
         sceneWidth: this.properties.width,
         sceneHeight: this.properties.height,
@@ -79,6 +94,9 @@ Component({
       console.log('✅ AR 系统已就绪');
       this.triggerEvent('arReady', {});
 
+      // 相机就绪后预加载视频（安卓/iOS；鸿蒙跳过，走识别后再加载的最稳路径）
+      this._maybePreload();
+
       // 部分机型在 ar-ready 之前就已识别到 marker，这里检查初始状态
       // EARTrackerState: Init=0, Detecting=1, Detected=2, Error=3
       try {
@@ -94,6 +112,17 @@ Component({
       } catch (e) {
         console.warn('检查 tracker 初始状态失败(可忽略):', e);
       }
+    },
+
+    /** 满足条件时预加载视频（仅开启、非鸿蒙、已 ar-ready 时执行一次） */
+    _maybePreload() {
+      if (!this.properties.preloadVideoOnReady) return;
+      if (this._isHarmony) return; // 鸿蒙先用"识别后再加载"保证能播
+      if (!this.data.arReady) return;
+      if (this._videoLoaded || this._videoLoading) return;
+      const url = this.properties.videoUrl;
+      if (!url) return;
+      this._loadVideo(url, true);
     },
 
     /** 追踪状态切换：识别到/丢失（e.detail.value 为 boolean） */
@@ -127,12 +156,17 @@ Component({
       if (this._videoLoaded) {
         this._showVideo();
       } else if (this.properties.videoUrl) {
-        this._loadVideo(this.properties.videoUrl);
+        this._loadVideo(this.properties.videoUrl, false);
       }
     },
 
-    /** 识别到后加载视频纹理（含失败重试），加载完成立即创建平面播放 */
-    async _loadVideo(url) {
+    /**
+     * 加载视频纹理（含失败重试）。
+     * 统一使用 autoPlay:true（解码器加载即启动，避免卡首帧）。
+     * @param {string} url 视频地址
+     * @param {boolean} preload true=预加载（autoPlay 预热后暂停，识别时续播）；false=识别时加载（直接播放）
+     */
+    async _loadVideo(url, preload) {
       if (this._videoLoading || this._videoLoaded) return;
       if (!this.scene || !url) return;
       this._videoLoading = true;
@@ -150,9 +184,26 @@ Component({
         this._videoAssetId = assetId;
         this._videoLoaded = true;
         this._videoLoading = false;
-        console.log('✅ 视频资源加载完成, 宽高:', this._videoAsset.width, 'x', this._videoAsset.height);
+        this._videoPausedByPreload = false;
+        console.log('✅ 视频资源加载完成, 宽高:', this._videoAsset.width, 'x', this._videoAsset.height, 'preload:', preload);
 
-        // 加载完成时若仍处于识别状态，立即创建平面并播放
+        // 预加载：autoPlay 已启动解码，稍后暂停避免识别前出声（同时完成解码预热）
+        if (preload) {
+          setTimeout(() => {
+            // 若已识别/已展示，不再暂停
+            if (this._tracked || this._meshCreated) return;
+            const a = this._videoAsset;
+            if (a && typeof a.pause === 'function') {
+              try {
+                a.pause();
+                this._videoPausedByPreload = true;
+                console.log('⏸️ 预加载视频已预热并暂停，等待识别');
+              } catch (e) { /* 忽略 */ }
+            }
+          }, 200);
+        }
+
+        // 加载完成时若已识别到 marker，立即创建平面并播放
         if (this._tracked) {
           this._showVideo();
         }
@@ -162,7 +213,7 @@ Component({
         const msg = (err && (err.errMsg || err.message)) || String(err);
         if (this._videoRetry <= 2) {
           console.warn('⚠️ 视频加载失败，准备重试:', msg);
-          setTimeout(() => this._loadVideo(url), 1200);
+          setTimeout(() => this._loadVideo(url, preload), 1200);
           return;
         }
         console.error('❌ 视频资源加载失败:', msg);
@@ -206,10 +257,8 @@ Component({
           t.position.setValue(this.properties.posX, this.properties.posY, this.properties.posZ);
         }
 
-        // 确保开始播放（部分机型需要显式 play 唤醒）
-        if (typeof asset.play === 'function') {
-          try { asset.play(); } catch (e) { /* 忽略 */ }
-        }
+        // 确保播放（含对卡在首帧的机型做 seek+play 唤醒）
+        this._ensurePlaying(asset);
 
         this._meshCreated = true;
         console.log('🎉 视频已开始播放');
@@ -217,6 +266,39 @@ Component({
         console.error('❌ 创建视频平面异常:', err);
         this.triggerEvent('videoError', { message: '创建视频平面异常' });
       }
+    },
+
+    /**
+     * 确保视频进入播放态：
+     *   1) 立即 play()（若被预加载暂停则续播）；
+     *   2) 1.5s 后检查 EVideoState，若仍未播放则 seek(0)+play() 强制唤醒（专治鸿蒙等机型卡首帧）。
+     */
+    _ensurePlaying(asset) {
+      const doPlay = () => {
+        if (typeof asset.play === 'function') {
+          try { asset.play(); } catch (e) { /* 忽略 */ }
+        }
+      };
+      doPlay();
+
+      setTimeout(() => {
+        try {
+          const xrfs = wx.getXrFrameSystem && wx.getXrFrameSystem();
+          const Playing = xrfs && xrfs.EVideoState && xrfs.EVideoState.Playing;
+          if (Playing !== undefined && asset.state !== undefined && asset.state !== Playing) {
+            console.warn('⚠️ 视频未进入播放态，seek(0)+play 唤醒');
+            if (typeof asset.seek === 'function') {
+              try { asset.seek(0); } catch (e) { /* 忽略 */ }
+            }
+            setTimeout(doPlay, 100);
+          } else if (asset.state === undefined) {
+            // state 不可用时，兜底再 play 一次
+            doPlay();
+          }
+        } catch (e) {
+          doPlay();
+        }
+      }, 1500);
     },
 
     /** 触摸唤醒音频：iOS 首次用户触摸时调用，解除静音限制（无需额外按钮） */
