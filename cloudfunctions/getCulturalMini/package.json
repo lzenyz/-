@@ -1,0 +1,14 @@
+{
+  "name": "getCulturalMini",
+  "version": "1.0.0",
+  "description": "传统文化小程序AI生成云函数，CloudBase内置deepseek，使用 wx-server-sdk >= 4.0.1 的 cloud.ai() API，数据库缓存，无外部API密钥",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "wx-server-sdk": "^4.0.2"
+  }
+}
